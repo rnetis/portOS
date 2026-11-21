@@ -7,7 +7,7 @@ use portos_core::container::ContainerNumber;
 use portos_core::ids::{CallId, EquipmentId, JobId, MoveId};
 use portos_core::work::{Equipment, EquipmentStatus, Job, JobStatus, MoveRecord};
 use portos_core::{CoreError, CoreResult};
-use rusqlite::Row;
+use rusqlite::{OptionalExtension, Row};
 
 fn bad_row(col: &str) -> rusqlite::Error {
     rusqlite::Error::InvalidColumnType(0, col.to_string(), rusqlite::types::Type::Text)
@@ -18,12 +18,15 @@ fn row_to_equipment(r: &Row<'_>) -> rusqlite::Result<Equipment> {
     let status: String = r.get("status")?;
     let telemetry: Option<String> = r.get("telemetry")?;
     Ok(Equipment {
-        id: EquipmentId::from_uuid(uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?),
+        id: EquipmentId::from_uuid(
+            uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?,
+        ),
         code: r.get("code")?,
         kind: serde_json::from_str(&format!("\"{kind}\"")).map_err(|_| bad_row("kind"))?,
         status: serde_json::from_str(&format!("\"{status}\"")).map_err(|_| bad_row("status"))?,
         hours_meter: r.get("hours_meter")?,
-        last_service_at: parse_ts_opt(r.get("last_service_at")?).map_err(|_| bad_row("last_service_at"))?,
+        last_service_at: parse_ts_opt(r.get("last_service_at")?)
+            .map_err(|_| bad_row("last_service_at"))?,
         telemetry: telemetry.and_then(|t| serde_json::from_str(&t).ok()),
     })
 }
@@ -51,27 +54,61 @@ pub fn upsert_equipment(store: &Store, e: &Equipment) -> CoreResult<()> {
 
 pub fn list_equipment(store: &Store) -> CoreResult<Vec<Equipment>> {
     on_conn(&store.conn(), |c| {
-        let mut stmt = c.prepare("SELECT * FROM equipment ORDER BY code").map_err(map_err)?;
+        let mut stmt = c
+            .prepare("SELECT * FROM equipment ORDER BY code")
+            .map_err(map_err)?;
         let rows = stmt.query_map([], row_to_equipment).map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
-pub fn update_equipment_status(store: &Store, id: EquipmentId, status: EquipmentStatus) -> CoreResult<()> {
+/// Id of a synthetic equipment row used for externally reported moves
+/// (e.g. COARRI crane reports) that carry no terminal equipment id. The
+/// row keeps the moves table's referential integrity intact.
+pub fn ensure_report_equipment(store: &Store, code: &str) -> CoreResult<EquipmentId> {
+    on_conn(&store.conn(), |c| {
+        if let Some(raw) = c
+            .query_row("SELECT id FROM equipment WHERE code = ?1", [code], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()
+            .map_err(map_err)?
+        {
+            let uuid = uuid::Uuid::parse_str(&raw)
+                .map_err(|e| CoreError::Internal(format!("equipment id: {e}")))?;
+            return Ok(EquipmentId::from_uuid(uuid));
+        }
+        let id = EquipmentId::generate();
+        c.execute(
+            "INSERT INTO equipment (id, code, kind, status, hours_meter) VALUES (?1,?2,'quay_crane','offline',0)",
+            rusqlite::params![id.to_string(), code],
+        )
+        .map_err(map_err)?;
+        Ok(id)
+    })
+}
+
+pub fn update_equipment_status(
+    store: &Store,
+    id: EquipmentId,
+    status: EquipmentStatus,
+) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         c.execute(
             "UPDATE equipment SET status = ?2 WHERE id = ?1",
-            rusqlite::params![
-                id.to_string(),
-                crate::util::enum_str(&status)
-            ],
+            rusqlite::params![id.to_string(), crate::util::enum_str(&status)],
         )
         .map_err(map_err)?;
         Ok(())
     })
 }
 
-pub fn update_telemetry(store: &Store, code: &str, telemetry: &serde_json::Value, hours: Option<f64>) -> CoreResult<()> {
+pub fn update_telemetry(
+    store: &Store,
+    code: &str,
+    telemetry: &serde_json::Value,
+    hours: Option<f64>,
+) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         if let Some(h) = hours {
             c.execute(
@@ -97,17 +134,21 @@ fn row_to_job(r: &Row<'_>) -> rusqlite::Result<Job> {
     let container: Option<String> = r.get("container_id")?;
     let assigned: Option<String> = r.get("assigned_to")?;
     Ok(Job {
-        id: JobId::from_uuid(uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?),
+        id: JobId::from_uuid(
+            uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?,
+        ),
         kind: serde_json::from_str(&format!("\"{kind}\"")).map_err(|_| bad_row("kind"))?,
         call: call.map(|s| CallId::from_uuid(uuid::Uuid::parse_str(&s).unwrap_or_default())),
         container: container
             .map(|s| ContainerNumber::parse(&s))
             .transpose()
             .map_err(|_| bad_row("container_id"))?,
-        assigned_to: assigned.map(|s| EquipmentId::from_uuid(uuid::Uuid::parse_str(&s).unwrap_or_default())),
+        assigned_to: assigned
+            .map(|s| EquipmentId::from_uuid(uuid::Uuid::parse_str(&s).unwrap_or_default())),
         priority: r.get::<_, i64>("priority")? as u8,
         status: serde_json::from_str(&format!("\"{status}\"")).map_err(|_| bad_row("status"))?,
-        created_at: parse_ts(&r.get::<_, String>("created_at")?).map_err(|_| bad_row("created_at"))?,
+        created_at: parse_ts(&r.get::<_, String>("created_at")?)
+            .map_err(|_| bad_row("created_at"))?,
         assigned_at: parse_ts_opt(r.get("assigned_at")?).map_err(|_| bad_row("assigned_at"))?,
         completed_at: parse_ts_opt(r.get("completed_at")?).map_err(|_| bad_row("completed_at"))?,
         issue: r.get("issue")?,
@@ -138,11 +179,15 @@ pub fn create_job(store: &Store, job: &Job) -> CoreResult<()> {
 
 pub fn get_job(store: &Store, id: JobId) -> CoreResult<Job> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM jobs WHERE id = ?1", [id.to_string()], row_to_job)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("job {id}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM jobs WHERE id = ?1",
+            [id.to_string()],
+            row_to_job,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("job {id}")),
+            _ => map_err(e),
+        })
     })
 }
 
@@ -166,13 +211,19 @@ pub fn update_job(store: &Store, job: &Job) -> CoreResult<()> {
 pub fn list_jobs(store: &Store, statuses: &[JobStatus], limit: u32) -> CoreResult<Vec<Job>> {
     if statuses.is_empty() {
         return on_conn(&store.conn(), |c| {
-            let mut stmt = c.prepare("SELECT * FROM jobs ORDER BY priority, created_at LIMIT ?1").map_err(map_err)?;
+            let mut stmt = c
+                .prepare("SELECT * FROM jobs ORDER BY priority, created_at LIMIT ?1")
+                .map_err(map_err)?;
             let rows = stmt.query_map([limit], row_to_job).map_err(map_err)?;
-            rows.filter_map(|r| r.ok()).map(Ok).collect()
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
         });
     }
     // Simple two-status fast path plus generic IN list.
-    let placeholders: Vec<String> = statuses.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+    let placeholders: Vec<String> = statuses
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect();
     let sql = format!(
         "SELECT * FROM jobs WHERE status IN ({}) ORDER BY priority, created_at LIMIT ?{}",
         placeholders.join(","),
@@ -184,25 +235,39 @@ pub fn list_jobs(store: &Store, statuses: &[JobStatus], limit: u32) -> CoreResul
         .collect::<CoreResult<_>>()?;
     on_conn(&store.conn(), |c| {
         let mut stmt = c.prepare(&sql).map_err(map_err)?;
-        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = params.iter().map(|p| Box::new(p.clone()) as Box<dyn rusqlite::ToSql>).collect();
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = params
+            .iter()
+            .map(|p| Box::new(p.clone()) as Box<dyn rusqlite::ToSql>)
+            .collect();
         binds.push(Box::new(limit));
         let pref: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
-        let rows = stmt.query_map(pref.as_slice(), row_to_job).map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        let rows = stmt
+            .query_map(pref.as_slice(), row_to_job)
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
 fn row_to_move(r: &Row<'_>) -> rusqlite::Result<MoveRecord> {
     Ok(MoveRecord {
-        id: MoveId::from_uuid(uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?),
-        job: JobId::from_uuid(uuid::Uuid::parse_str(&r.get::<_, String>("job_id")?).map_err(|_| bad_row("job_id"))?),
-        equipment: EquipmentId::from_uuid(
-            uuid::Uuid::parse_str(&r.get::<_, String>("equipment_id")?).map_err(|_| bad_row("equipment_id"))?,
+        id: MoveId::from_uuid(
+            uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?,
         ),
-        container: ContainerNumber::parse(&r.get::<_, String>("container_id")?).map_err(|_| bad_row("container_id"))?,
-        kind: serde_json::from_str(&format!("\"{}\"", r.get::<_, String>("kind")?)).map_err(|_| bad_row("kind"))?,
-        started_at: parse_ts(&r.get::<_, String>("started_at")?).map_err(|_| bad_row("started_at"))?,
-        finished_at: parse_ts(&r.get::<_, String>("finished_at")?).map_err(|_| bad_row("finished_at"))?,
+        job: JobId::from_uuid(
+            uuid::Uuid::parse_str(&r.get::<_, String>("job_id")?).map_err(|_| bad_row("job_id"))?,
+        ),
+        equipment: EquipmentId::from_uuid(
+            uuid::Uuid::parse_str(&r.get::<_, String>("equipment_id")?)
+                .map_err(|_| bad_row("equipment_id"))?,
+        ),
+        container: ContainerNumber::parse(&r.get::<_, String>("container_id")?)
+            .map_err(|_| bad_row("container_id"))?,
+        kind: serde_json::from_str(&format!("\"{}\"", r.get::<_, String>("kind")?))
+            .map_err(|_| bad_row("kind"))?,
+        started_at: parse_ts(&r.get::<_, String>("started_at")?)
+            .map_err(|_| bad_row("started_at"))?,
+        finished_at: parse_ts(&r.get::<_, String>("finished_at")?)
+            .map_err(|_| bad_row("finished_at"))?,
         success: r.get::<_, i64>("success")? != 0,
     })
 }
@@ -239,13 +304,19 @@ pub fn count_moves_for_call(store: &Store, call: portos_core::ids::CallId) -> Co
     })
 }
 
-pub fn moves_between(store: &Store, from: DateTime<Utc>, to: DateTime<Utc>) -> CoreResult<Vec<MoveRecord>> {
+pub fn moves_between(
+    store: &Store,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> CoreResult<Vec<MoveRecord>> {
     on_conn(&store.conn(), |c| {
         let mut stmt = c
             .prepare("SELECT * FROM moves WHERE started_at >= ?1 AND finished_at <= ?2 ORDER BY started_at")
             .map_err(map_err)?;
-        let rows = stmt.query_map(rusqlite::params![ts(from), ts(to)], row_to_move).map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        let rows = stmt
+            .query_map(rusqlite::params![ts(from), ts(to)], row_to_move)
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
@@ -267,7 +338,13 @@ mod tests {
             telemetry: None,
         };
         upsert_equipment(&store, &eq).unwrap();
-        update_telemetry(&store, "QC-01", &serde_json::json!({"spread_load_pct": 72}), Some(1240.0)).unwrap();
+        update_telemetry(
+            &store,
+            "QC-01",
+            &serde_json::json!({"spread_load_pct": 72}),
+            Some(1240.0),
+        )
+        .unwrap();
         let eqs = list_equipment(&store).unwrap();
         assert_eq!(eqs.len(), 1);
         assert_eq!(eqs[0].hours_meter, 1240.0);
@@ -294,7 +371,10 @@ mod tests {
         j.assigned_to = Some(eq.id);
         j.assigned_at = Some(Utc::now());
         update_job(&store, &j).unwrap();
-        assert_eq!(get_job(&store, job.id).unwrap().status, JobStatus::InProgress);
+        assert_eq!(
+            get_job(&store, job.id).unwrap().status,
+            JobStatus::InProgress
+        );
 
         let mv = MoveRecord {
             id: MoveId::generate(),
@@ -307,6 +387,15 @@ mod tests {
             success: true,
         };
         record_move(&store, &mv).unwrap();
-        assert_eq!(moves_between(&store, Utc::now() - chrono::Duration::minutes(1), Utc::now() + chrono::Duration::minutes(5)).unwrap().len(), 1);
+        assert_eq!(
+            moves_between(
+                &store,
+                Utc::now() - chrono::Duration::minutes(1),
+                Utc::now() + chrono::Duration::minutes(5)
+            )
+            .unwrap()
+            .len(),
+            1
+        );
     }
 }

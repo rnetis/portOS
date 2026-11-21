@@ -4,9 +4,9 @@ use axum::extract::{Query, State};
 use axum::Extension;
 use axum::Json;
 use portos_core::kpi::{
-    avg_anchorage_wait_hours, avg_dwell_hours, avg_truck_turnaround_minutes,
-    gross_moves_per_hour, move_failure_pct, throughput_per_hour, AnchorageSample, DwellSample,
-    MoveSample, OperationsKpis, TruckSample,
+    avg_anchorage_wait_hours, avg_dwell_hours, avg_truck_turnaround_minutes, gross_moves_per_hour,
+    move_failure_pct, throughput_per_hour, AnchorageSample, DwellSample, MoveSample,
+    OperationsKpis, TruckSample,
 };
 use std::collections::HashMap;
 
@@ -24,7 +24,11 @@ pub async fn dashboard(
     Extension(_auth): Extension<AuthContext>,
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<serde_json::Value> {
-    let hours: i64 = q.get("hours").and_then(|v| v.parse().ok()).unwrap_or(24).clamp(1, 24 * 30);
+    let hours: i64 = q
+        .get("hours")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24)
+        .clamp(1, 24 * 30);
     let from = chrono::Utc::now() - chrono::Duration::hours(hours);
     let to = chrono::Utc::now();
 
@@ -61,7 +65,11 @@ pub async fn dashboard(
 
     let move_samples: Vec<MoveSample> = moves
         .iter()
-        .map(|m| MoveSample { started_at: m.started_at, finished_at: m.finished_at, success: m.success })
+        .map(|m| MoveSample {
+            started_at: m.started_at,
+            finished_at: m.finished_at,
+            success: m.success,
+        })
         .collect();
     let dwell_samples: Vec<DwellSample> = gate_txs
         .iter()
@@ -75,12 +83,20 @@ pub async fn dashboard(
         .collect();
     let truck_samples: Vec<TruckSample> = gate_txs
         .iter()
-        .filter_map(|t| t.completed_at.map(|c| TruckSample { started_at: t.started_at, completed_at: c }))
+        .filter_map(|t| {
+            t.completed_at.map(|c| TruckSample {
+                started_at: t.started_at,
+                completed_at: c,
+            })
+        })
         .collect();
     let anchorage_samples: Vec<AnchorageSample> = calls
         .iter()
         .filter_map(|c| match (c.anchorage_arrived_at, c.berthed_at) {
-            (Some(a), Some(b)) if b >= from && b <= to => Some(AnchorageSample { anchorage_arrived: a, berthed: b }),
+            (Some(a), Some(b)) if b >= from && b <= to => Some(AnchorageSample {
+                anchorage_arrived: a,
+                berthed: b,
+            }),
             _ => None,
         })
         .collect();
@@ -96,7 +112,10 @@ pub async fn dashboard(
             None
         },
         gate_throughput_per_hour: throughput_per_hour(
-            gate_txs.iter().filter(|t| t.status == portos_core::gate::GateStatus::Completed).count() as u64,
+            gate_txs
+                .iter()
+                .filter(|t| t.status == portos_core::gate::GateStatus::Completed)
+                .count() as u64,
             from,
             to,
         ),
@@ -105,9 +124,7 @@ pub async fn dashboard(
     };
 
     let num = ctx.numerals;
-    let f = |v: Option<f64>, d: u32| {
-        v.map(|x| portos_i18n::formats::number_display(num, x, d))
-    };
+    let f = |v: Option<f64>, d: u32| v.map(|x| portos_i18n::formats::number_display(num, x, d));
     Ok(Json(serde_json::json!({
         "window_hours": hours,
         "from": from.to_rfc3339(),

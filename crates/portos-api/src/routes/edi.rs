@@ -3,10 +3,13 @@
 use axum::extract::State;
 use axum::Extension;
 use axum::Json;
-use portos_edi::{baplie::BaplieMessage, coarri::CoarriMessage, codeco::CodecoMessage, coparn::CoparnMessage, syntax::Interchange};
-use portos_core::container::{Container, ContainerNumber, ContainerState, CustomsStatus};
+use portos_core::container::{Container, ContainerNumber, ContainerState};
 use portos_core::work::JobKind;
-use portos_core::{CoreError, CoreResult};
+use portos_core::CoreError;
+use portos_edi::{
+    baplie::BaplieMessage, coarri::CoarriMessage, codeco::CodecoMessage, coparn::CoparnMessage,
+    syntax::Interchange,
+};
 use portos_i18n::Args;
 use serde::Deserialize;
 
@@ -31,15 +34,17 @@ pub async fn import_message(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<ImportBody>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("edi.import").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("edi.import")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let interchange = Interchange::parse(&body.raw)
         .map_err(|e| problem(&state, &ctx, CoreError::Validation(format!("EDI: {e}"))))?;
 
     let message_type = body.message_type.trim().to_ascii_uppercase();
     match message_type.as_str() {
         "COPARN" => {
-            let msg = CoparnMessage::parse(&interchange)
-                .map_err(|e| problem(&state, &ctx, CoreError::Validation(format!("COPARN: {e}"))))?;
+            let msg = CoparnMessage::parse(&interchange).map_err(|e| {
+                problem(&state, &ctx, CoreError::Validation(format!("COPARN: {e}")))
+            })?;
             let containers = msg.entries.clone();
             let count = containers.len();
             db(&state.store, move |store| {
@@ -59,9 +64,8 @@ pub async fn import_message(
                     portos_store::yard::upsert_container(store, &ct)?;
                     let target = match e.movement {
                         portos_edi::coparn::Movement::Load => ContainerState::Advertised,
-                        portos_edi::coparn::Movement::Discharge | portos_edi::coparn::Movement::Shift => {
-                            ContainerState::Advertised
-                        }
+                        portos_edi::coparn::Movement::Discharge
+                        | portos_edi::coparn::Movement::Shift => ContainerState::Advertised,
                     };
                     portos_store::yard::set_container_state(store, &ct.number, target)?;
                 }
@@ -72,8 +76,9 @@ pub async fn import_message(
             respond_edi(&state, ctx, auth, "COPARN", count, msg.vessel_name).await
         }
         "CODECO" => {
-            let msg = CodecoMessage::parse(&interchange)
-                .map_err(|e| problem(&state, &ctx, CoreError::Validation(format!("CODECO: {e}"))))?;
+            let msg = CodecoMessage::parse(&interchange).map_err(|e| {
+                problem(&state, &ctx, CoreError::Validation(format!("CODECO: {e}")))
+            })?;
             let entries = msg.entries.clone();
             let count = entries.len();
             db(&state.store, move |store| {
@@ -92,11 +97,17 @@ pub async fn import_message(
             respond_edi(&state, ctx, auth, "CODECO", count, None).await
         }
         "COARRI" => {
-            let msg = CoarriMessage::parse(&interchange)
-                .map_err(|e| problem(&state, &ctx, CoreError::Validation(format!("COARRI: {e}"))))?;
+            let msg = CoarriMessage::parse(&interchange).map_err(|e| {
+                problem(&state, &ctx, CoreError::Validation(format!("COARRI: {e}")))
+            })?;
             let entries = msg.entries.clone();
             let count = entries.len();
             db(&state.store, move |store| {
+                // Crane reports arrive from the vessel, not from a terminal
+                // equipment unit; anchor them to a real (system) row so the
+                // moves table keeps its foreign key.
+                let report_equipment =
+                    portos_store::work::ensure_report_equipment(store, "EDI-REPORT")?;
                 for e in entries {
                     // Confirm the move as a job record (crane reports — F-13/F-32).
                     let job = portos_core::work::Job {
@@ -118,7 +129,7 @@ pub async fn import_message(
                     let mv = portos_core::work::MoveRecord {
                         id: portos_core::ids::MoveId::generate(),
                         job: job.id,
-                        equipment: portos_core::ids::EquipmentId::from_uuid(uuid::Uuid::nil()),
+                        equipment: report_equipment,
                         container: job.container.clone().unwrap(),
                         kind: e.move_type,
                         started_at: e.started_at,
@@ -134,8 +145,9 @@ pub async fn import_message(
             respond_edi(&state, ctx, auth, "COARRI", count, msg.vessel_name).await
         }
         "BAPLIE" => {
-            let msg = BaplieMessage::parse(&interchange)
-                .map_err(|e| problem(&state, &ctx, CoreError::Validation(format!("BAPLIE: {e}"))))?;
+            let msg = BaplieMessage::parse(&interchange).map_err(|e| {
+                problem(&state, &ctx, CoreError::Validation(format!("BAPLIE: {e}")))
+            })?;
             let entries = msg.entries.clone();
             let count = entries.len();
             // Stowage plans are ingested as container master data + state.
@@ -154,7 +166,11 @@ pub async fn import_message(
                         pod: None,
                     };
                     portos_store::yard::upsert_container(store, &ct)?;
-                    portos_store::yard::set_container_state(store, &ct.number, ContainerState::OnVessel)?;
+                    portos_store::yard::set_container_state(
+                        store,
+                        &ct.number,
+                        ContainerState::OnVessel,
+                    )?;
                 }
                 Ok(())
             })
@@ -191,7 +207,9 @@ async fn respond_edi(
     let msg = state.t(
         ctx.locale,
         "edi.received",
-        &Args::new().arg("message_type", message_type).arg("count", count.to_string()),
+        &Args::new()
+            .arg("message_type", message_type)
+            .arg("count", count.to_string()),
     );
     Ok(Json(serde_json::json!({
         "message_type": message_type,
@@ -228,24 +246,45 @@ pub async fn export_message(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<ExportBody>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("edi.export").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("edi.export")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let message_type = body.message_type.trim().to_ascii_uppercase();
     if message_type != "BAPLIE" {
-        return Err(problem(&state, &ctx, CoreError::Validation("only BAPLIE export is supported in Phase 1".into())));
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Validation("only BAPLIE export is supported in Phase 1".into()),
+        ));
     }
     let mut entries = Vec::new();
     for c in &body.containers {
         let position = match &c.position {
-            Some(p) => Some(portos_edi::baplie::StowPosition::parse_triple(p).map_err(|e| {
-                problem(&state, &ctx, CoreError::Validation(format!("position: {e}")))
-            })?),
+            Some(p) => Some(
+                portos_edi::baplie::StowPosition::parse_triple(p).map_err(|e| {
+                    problem(
+                        &state,
+                        &ctx,
+                        CoreError::Validation(format!("position: {e}")),
+                    )
+                })?,
+            ),
             None => None,
         };
         entries.push(portos_edi::baplie::BaplieEntry {
-            container: ContainerNumber::parse(&c.number)
-                .map_err(|e| problem(&state, &ctx, CoreError::Validation(format!("container: {e}"))))?,
-            size_type: portos_core::container::IsoSizeType::parse(&c.size_type)
-                .map_err(|e| problem(&state, &ctx, CoreError::Validation(format!("size_type: {e}"))))?,
+            container: ContainerNumber::parse(&c.number).map_err(|e| {
+                problem(
+                    &state,
+                    &ctx,
+                    CoreError::Validation(format!("container: {e}")),
+                )
+            })?,
+            size_type: portos_core::container::IsoSizeType::parse(&c.size_type).map_err(|e| {
+                problem(
+                    &state,
+                    &ctx,
+                    CoreError::Validation(format!("size_type: {e}")),
+                )
+            })?,
             full: c.full.unwrap_or(true),
             weight_kg: c.weight_kg,
             position,

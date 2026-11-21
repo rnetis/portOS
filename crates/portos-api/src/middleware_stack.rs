@@ -1,10 +1,10 @@
 //! Cross-cutting HTTP middleware: request ids, metrics, security headers,
 //! rate limiting.
 
+use axum::extract::Request;
 use axum::extract::{ConnectInfo, MatchedPath, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
-use axum::extract::Request;
 use axum::response::{IntoResponse, Response};
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -13,7 +13,22 @@ use uuid::Uuid;
 use crate::state::AppState;
 
 /// Client IP for rate limiting (absent in unit tests → stable fallback).
-fn client_ip(req: &Request) -> String {
+/// Behind a reverse proxy the forwarding header is only trusted when the
+/// deployment explicitly opts in (`PORTOS_TRUST_PROXY=1`), so untrusted
+/// clients cannot spoof their identity.
+fn client_ip(req: &Request, trust_proxy: bool) -> String {
+    if trust_proxy {
+        if let Some(ip) = req
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return ip.to_string();
+        }
+    }
     req.extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip().to_string())
@@ -33,7 +48,8 @@ pub async fn request_id(mut req: Request, next: Next) -> Response {
     req.extensions_mut().insert(id.clone());
     let mut res = next.run(req).await;
     if let Ok(v) = HeaderValue::from_str(&id) {
-        res.headers_mut().insert(HeaderName::from_static("x-request-id"), v);
+        res.headers_mut()
+            .insert(HeaderName::from_static("x-request-id"), v);
     }
     drop(span);
     res
@@ -52,7 +68,9 @@ pub async fn http_metrics(req: Request, next: Next) -> Response {
     let elapsed = start.elapsed().as_secs_f64();
     let status = res.status().as_u16();
     crate::metrics::METRICS.inc(
-        &format!("portos_http_requests_total{{method=\"{method}\",path=\"{path}\",status=\"{status}\"}}"),
+        &format!(
+            "portos_http_requests_total{{method=\"{method}\",path=\"{path}\",status=\"{status}\"}}"
+        ),
         1,
     );
     crate::metrics::METRICS.observe("portos_http_request_duration_seconds", elapsed);
@@ -83,12 +101,8 @@ pub async fn security_headers(req: Request, next: Next) -> Response {
 }
 
 /// Global per-IP token bucket; login gets a stricter dedicated bucket.
-pub async fn rate_limit(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
-    let ip = client_ip(&req);
+pub async fn rate_limit(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let ip = client_ip(&req, state.config.trust_proxy);
     let is_login = req.uri().path().starts_with("/v1/auth/login");
     let allowed = if is_login {
         state.login_limiter.allow(&format!("login:{ip}"))
@@ -97,10 +111,28 @@ pub async fn rate_limit(
     };
     if !allowed {
         crate::metrics::METRICS.inc_by_one("portos_rate_limited_total");
-        let title = state.t(portos_i18n::Locale::En, "error.rate_limited", &portos_i18n::Args::new());
+        let title = state.t(
+            portos_i18n::Locale::En,
+            "error.rate_limited",
+            &portos_i18n::Args::new(),
+        );
         return ApiProblem::rate_limited(title);
     }
     next.run(req).await
+}
+
+/// Request timeout with a carve-out for streaming endpoints: an SSE
+/// connection is long-lived by design and must not be cut after
+/// `PORTOS_TIMEOUT_SECS` (§6.2).
+pub async fn timeout(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    if req.uri().path().starts_with("/v1/events/stream") {
+        return next.run(req).await;
+    }
+    let limit = std::time::Duration::from_secs(state.config.timeout_secs.max(1));
+    match tokio::time::timeout(limit, next.run(req)).await {
+        Ok(res) => res,
+        Err(_) => ApiProblem::timeout(),
+    }
 }
 
 /// Small local alias so middleware can render problem+json without the
@@ -108,6 +140,22 @@ pub async fn rate_limit(
 struct ApiProblem;
 
 impl ApiProblem {
+    fn timeout() -> Response {
+        (
+            StatusCode::GATEWAY_TIMEOUT,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/problem+json; charset=utf-8",
+            )],
+            axum::Json(serde_json::json!({
+                "type": "https://portos.dev/problems/timeout",
+                "title": "request timed out",
+                "status": 504,
+            })),
+        )
+            .into_response()
+    }
+
     fn rate_limited(title: String) -> Response {
         (
             StatusCode::TOO_MANY_REQUESTS,

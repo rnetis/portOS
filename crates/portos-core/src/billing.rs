@@ -139,7 +139,9 @@ impl ChargeLine {
         let unit_minor = tariff.unit_price_for(quantity);
         let amount = Money::new(unit_minor, tariff.currency).mul_qty(quantity);
         if amount.currency != tariff.currency {
-            return Err(CoreError::Internal("currency mismatch in charge line".into()));
+            return Err(CoreError::Internal(
+                "currency mismatch in charge line".into(),
+            ));
         }
         let tax_minor = (amount.minor as f64 * tariff.tax_rate).round() as i64;
         Ok(ChargeLine {
@@ -233,7 +235,13 @@ pub fn compute_kwh_charge(
             tariff.code
         )));
     }
-    ChargeLine::build(tariff, charge_ref, kwh, "shore power (kWh)".into(), "برق ساحلی (کیلووات‌ساعت)".into())
+    ChargeLine::build(
+        tariff,
+        charge_ref,
+        kwh,
+        "shore power (kWh)".into(),
+        "برق ساحلی (کیلووات‌ساعت)".into(),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,7 +283,11 @@ pub struct InvoiceDraft {
 
 impl InvoiceDraft {
     pub fn new(customer: CustomerId, currency: Currency) -> Self {
-        Self { customer, currency, lines: Vec::new() }
+        Self {
+            customer,
+            currency,
+            lines: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, line: ChargeLine) -> CoreResult<()> {
@@ -355,7 +367,16 @@ mod tests {
             "STORAGE-IMP",
             850_000,
             4,
-            vec![Tier { up_to: Some(5.0), unit_minor: 850_000 }, Tier { up_to: None, unit_minor: 1_200_000 }],
+            vec![
+                Tier {
+                    up_to: Some(5.0),
+                    unit_minor: 850_000,
+                },
+                Tier {
+                    up_to: None,
+                    unit_minor: 1_200_000,
+                },
+            ],
         );
         let from = Utc::now();
         let until = from + Duration::hours(24 * 10); // 10 days
@@ -369,17 +390,17 @@ mod tests {
 
     #[test]
     fn part_day_rounds_up() {
-        let t = tariff("STORAGE", 100_000, 0, vec![]);
+        let t = tariff("STORAGE", 10_0000, 0, vec![]);
         let from = Utc::now();
         let until = from + Duration::hours(5);
         let c = compute_day_charge(&t, from, Some(until), Utc::now()).unwrap();
         assert_eq!(c.days_billed, 1);
-        assert_eq!(c.amount.minor, 100_000);
+        assert_eq!(c.amount.minor, 10_0000);
     }
 
     #[test]
     fn still_in_yard_bills_until_now() {
-        let t = tariff("STORAGE", 100_000, 0, vec![]);
+        let t = tariff("STORAGE", 10_0000, 0, vec![]);
         let from = Utc::now() - Duration::hours(48);
         let c = compute_day_charge(&t, from, None, Utc::now()).unwrap();
         assert_eq!(c.days_billed, 2);
@@ -389,15 +410,21 @@ mod tests {
     fn move_charge_with_vat() {
         let mut t = tariff("MOVE-DIS", 1_450_000, 0, vec![]);
         t.basis = TariffBasis::PerMove;
-        let line =
-            compute_move_charge(&t, 3, ChargeRef::Unspecified { label: "batch".into() }).unwrap();
+        let line = compute_move_charge(
+            &t,
+            3,
+            ChargeRef::Unspecified {
+                label: "batch".into(),
+            },
+        )
+        .unwrap();
         assert_eq!(line.amount.minor, 4_350_000);
         assert_eq!(line.tax_minor, 391_500); // 9%
     }
 
     #[test]
     fn invoice_totals_and_finalize() {
-        let mut t = tariff("STORAGE", 100_00, 0, vec![]); // $100.00/day
+        let mut t = tariff("STORAGE", 10_000, 0, vec![]); // $100.00/day
         t.currency = Currency::USD;
         t.tax_rate = 0.09;
         let draft = ChargeLine::build(
@@ -408,21 +435,21 @@ mod tests {
             "انبارش".into(),
         )
         .unwrap();
-        assert_eq!(draft.amount.minor, 300_00);
+        assert_eq!(draft.amount.minor, 30_000);
         assert_eq!(draft.tax_minor, 27_00);
         let customer = CustomerId::generate();
         let mut d = InvoiceDraft::new(customer, Currency::USD);
         d.push(draft).unwrap();
         let inv = d.finalize("INV-2026-000001".into(), Utc::now(), 30);
-        assert_eq!(inv.subtotal_minor, 300_00);
+        assert_eq!(inv.subtotal_minor, 30_000);
         assert_eq!(inv.tax_minor, 27_00);
-        assert_eq!(inv.total_minor, 327_00);
+        assert_eq!(inv.total_minor, 32_700);
         assert_eq!(inv.status, InvoiceStatus::Issued);
     }
 
     #[test]
     fn invoice_currency_mismatch_rejected() {
-        let t = tariff("STORAGE", 100_000, 0, vec![]); // IRR
+        let t = tariff("STORAGE", 10_0000, 0, vec![]); // IRR
         let line = ChargeLine::build(
             &t,
             ChargeRef::Unspecified { label: "x".into() },
@@ -437,7 +464,7 @@ mod tests {
 
     #[test]
     fn credit_control() {
-        assert!(credit_available(90_000, 100_000, 10_000));
-        assert!(!credit_available(90_000, 100_000, 10_001));
+        assert!(credit_available(90_000, 10_0000, 10_000));
+        assert!(!credit_available(90_000, 10_0000, 10_001));
     }
 }

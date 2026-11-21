@@ -4,9 +4,8 @@
 use axum::extract::{Query, State};
 use axum::Extension;
 use axum::Json;
-use portos_core::audit::AuditRecord;
 use portos_core::ids::IncidentId;
-use portos_core::{CoreError, CoreResult};
+use portos_core::CoreError;
 use portos_i18n::{Args, Calendar, Locale, Numerals};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -35,21 +34,39 @@ pub async fn create_user(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<CreateUser>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("admin.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("admin.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let username = body.username.trim().to_lowercase();
-    if username.len() < 3 || !username.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
-        return Err(problem(&state, &ctx, CoreError::Validation(
-            "username must be 3+ chars of [a-z0-9_]".into(),
-        )));
+    if username.len() < 3
+        || !username
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Validation("username must be 3+ chars of [a-z0-9_]".into()),
+        ));
     }
     if body.password.len() < 10 {
-        return Err(problem(&state, &ctx, CoreError::Validation(
-            "password must be at least 10 characters".into(),
-        )));
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Validation("password must be at least 10 characters".into()),
+        ));
     }
     let role = Role::parse(&body.role).map_err(|e| problem(&state, &ctx, e))?;
-    let hash = hash_password(&body.password).map_err(|e| problem(&state, &ctx, e))?;
-    let locale = body.locale.as_deref().and_then(Locale::parse).unwrap_or(ctx.locale);
+    // Argon2 hashing is CPU-bound; never run it on the async runtime.
+    let password = body.password.clone();
+    let hash = tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|e| problem(&state, &ctx, CoreError::Internal(format!("hash task: {e}"))))?
+        .map_err(|e| problem(&state, &ctx, e))?;
+    let locale = body
+        .locale
+        .as_deref()
+        .and_then(Locale::parse)
+        .unwrap_or(ctx.locale);
     let calendar = body
         .calendar
         .as_deref()
@@ -62,7 +79,16 @@ pub async fn create_user(
         .unwrap_or(portos_i18n::defaults_for(locale).1);
     let display = body.display_name.clone();
     let created = db(&state.store, move |store| {
-        portos_store::users::create(store, &username, &hash, &display, role.as_str(), locale, calendar, numerals)
+        portos_store::users::create(
+            store,
+            &username,
+            &hash,
+            &display,
+            role.as_str(),
+            locale,
+            calendar,
+            numerals,
+        )
     })
     .await
     .map_err(|e| problem(&state, &ctx, e))?;
@@ -71,7 +97,9 @@ pub async fn create_user(
     let msg = state.t(
         ctx.locale,
         "admin.user.created",
-        &Args::new().arg("username", &username).arg("role", role.as_str()),
+        &Args::new()
+            .arg("username", &username)
+            .arg("role", role.as_str()),
     );
     Ok(Json(serde_json::json!({
         "username": created.username,
@@ -87,8 +115,9 @@ pub async fn list_users(
     Extension(ctx): Extension<LocaleCtx>,
     Extension(auth): Extension<AuthContext>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("admin.manage").map_err(|e| problem(&state, &ctx, e))?;
-    let users = db(&state.store, |store| portos_store::users::list(store))
+    auth.require("admin.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
+    let users = db(&state.store, portos_store::users::list)
         .await
         .map_err(|e| problem(&state, &ctx, e))?;
     Ok(Json(serde_json::json!({ "users": users })))
@@ -101,16 +130,28 @@ pub async fn query_audit(
     Extension(auth): Extension<AuthContext>,
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("admin.manage").or_else(|_| auth.require("kpi.view")).map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("admin.manage")
+        .or_else(|_| auth.require("kpi.view"))
+        .map_err(|e| problem(&state, &ctx, e))?;
     let actor = q.get("actor").cloned();
     let entity_type = q.get("entity_type").cloned();
     let from = q
         .get("from")
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.with_timezone(&chrono::Utc));
-    let limit: u32 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100).min(1000);
+    let limit: u32 = q
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(1000);
     let records = db(&state.store, move |store| {
-        portos_store::misc::query_audit(store, actor.as_deref(), entity_type.as_deref(), from, limit)
+        portos_store::misc::query_audit(
+            store,
+            actor.as_deref(),
+            entity_type.as_deref(),
+            from,
+            limit,
+        )
     })
     .await
     .map_err(|e| problem(&state, &ctx, e))?;
@@ -132,11 +173,14 @@ pub async fn create_webhook(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<WebhookBody>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("admin.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("admin.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     if !body.url.starts_with("https://") && !body.url.starts_with("http://localhost") {
-        return Err(problem(&state, &ctx, CoreError::Validation(
-            "webhook URL must be https:// (http only for localhost)".into(),
-        )));
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Validation("webhook URL must be https:// (http only for localhost)".into()),
+        ));
     }
     // Generate a strong subscription secret; shown once to the operator.
     let secret = format!("whk_{}", uuid::Uuid::now_v7().simple());
@@ -148,8 +192,19 @@ pub async fn create_webhook(
     })
     .await
     .map_err(|e| problem(&state, &ctx, e))?;
-    crate::audit(&state, &auth, "admin.webhook.create", "webhook", &row.id.to_string()).await;
-    let msg = state.t(ctx.locale, "admin.webhook.created", &Args::new().arg("url", &row.url));
+    crate::audit(
+        &state,
+        &auth,
+        "admin.webhook.create",
+        "webhook",
+        &row.id.to_string(),
+    )
+    .await;
+    let msg = state.t(
+        ctx.locale,
+        "admin.webhook.created",
+        &Args::new().arg("url", &row.url),
+    );
     Ok(Json(serde_json::json!({
         "webhook": { "id": row.id.to_string(), "url": row.url, "events": row.events, "active": row.active },
         "secret": secret,
@@ -163,10 +218,13 @@ pub async fn list_webhooks(
     Extension(ctx): Extension<LocaleCtx>,
     Extension(auth): Extension<AuthContext>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("admin.manage").map_err(|e| problem(&state, &ctx, e))?;
-    let hooks = db(&state.store, |store| portos_store::misc::list_active_webhooks(store))
-        .await
+    auth.require("admin.manage")
         .map_err(|e| problem(&state, &ctx, e))?;
+    let hooks = db(&state.store, |store| {
+        portos_store::misc::list_active_webhooks(store)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     let hooks: Vec<serde_json::Value> = hooks
         .into_iter()
         .map(|h| serde_json::json!({ "id": h.id.to_string(), "url": h.url, "events": h.events, "active": h.active }))
@@ -190,7 +248,8 @@ pub async fn create_incident(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<IncidentBody>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("incident.report").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("incident.report")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let incident = portos_store::misc::IncidentRow {
         id: IncidentId::generate(),
         kind: body.kind,
@@ -203,9 +262,11 @@ pub async fn create_incident(
         actions: Vec::new(),
     };
     let i = incident.clone();
-    db(&state.store, move |store| portos_store::misc::create_incident(store, &i))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    db(&state.store, move |store| {
+        portos_store::misc::create_incident(store, &i)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     crate::events::publish(
         &state,
         portos_core::events::DomainEventKind::IncidentReported {
@@ -213,7 +274,14 @@ pub async fn create_incident(
             severity: incident.severity.clone(),
         },
     );
-    crate::audit(&state, &auth, "safety.incident", "incident", &incident.id.to_string()).await;
+    crate::audit(
+        &state,
+        &auth,
+        "safety.incident",
+        "incident",
+        &incident.id.to_string(),
+    )
+    .await;
     Ok(Json(serde_json::to_value(&incident).unwrap_or_default()))
 }
 
@@ -225,7 +293,11 @@ pub async fn list_incidents(
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<serde_json::Value> {
     let status = q.get("status").cloned();
-    let limit: u32 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100).min(1000);
+    let limit: u32 = q
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(1000);
     let incidents = db(&state.store, move |store| {
         portos_store::misc::list_incidents(store, status.as_deref(), limit)
     })
@@ -240,7 +312,8 @@ pub async fn effective_config(
     Extension(_ctx): Extension<LocaleCtx>,
     Extension(auth): Extension<AuthContext>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("admin.manage").map_err(|e| problem(&state, &_ctx, e))?;
+    auth.require("admin.manage")
+        .map_err(|e| problem(&state, &_ctx, e))?;
     Ok(Json(serde_json::json!({
         "config": state.config.redacted_summary(),
         "tenant": state.config.tenant,

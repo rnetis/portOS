@@ -8,7 +8,6 @@ use std::time::Instant;
 use tokio::sync::broadcast;
 
 use crate::config::Config;
-use crate::events::WebhookQueue;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -17,8 +16,6 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// Domain event bus for SSE subscribers (F-26).
     pub events: broadcast::Sender<portos_core::events::DomainEvent>,
-    /// Outbound webhook queue driven by the dispatcher worker (I-1).
-    pub webhooks: Arc<WebhookQueue>,
     /// Global per-IP request limiter.
     pub global_limiter: Arc<crate::ratelimit::RateLimiter>,
     /// Stricter limiter for login attempts (brute-force protection).
@@ -32,17 +29,20 @@ impl AppState {
     #[must_use]
     pub fn new(store: Store, config: Config) -> Self {
         let (events, _) = broadcast::channel(1024);
-        let global_limiter =
-            Arc::new(crate::ratelimit::RateLimiter::new(config.rate_limit_rps, (config.rate_limit_rps * 2.0).ceil() as u32));
+        let global_limiter = Arc::new(crate::ratelimit::RateLimiter::new(
+            config.rate_limit_rps,
+            (config.rate_limit_rps * 2.0).ceil() as u32,
+        ));
         let login_per_sec = config.login_rate_per_min as f64 / 60.0;
-        let login_limiter =
-            Arc::new(crate::ratelimit::RateLimiter::new(login_per_sec, config.login_rate_per_min.min(20)));
+        let login_limiter = Arc::new(crate::ratelimit::RateLimiter::new(
+            login_per_sec,
+            config.login_rate_per_min.min(20),
+        ));
         Self {
             store,
             catalogs: Arc::new(RwLock::new(CatalogSet::embedded())),
             config: Arc::new(config),
             events,
-            webhooks: Arc::new(WebhookQueue::default()),
             global_limiter,
             login_limiter,
             started_at: Instant::now(),

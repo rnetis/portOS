@@ -9,12 +9,12 @@ pub mod billing;
 pub mod fleet;
 pub mod gate;
 pub mod migrations;
+pub mod misc;
 pub mod pool;
 pub mod users;
 pub mod util;
 pub mod work;
 pub mod yard;
-pub mod misc;
 
 use portos_core::{CoreError, CoreResult};
 use rusqlite::Connection;
@@ -82,5 +82,14 @@ impl Store {
     /// Borrow one pooled connection for ad-hoc work.
     pub fn conn(&self) -> Arc<std::sync::Mutex<Connection>> {
         self.pool.checkout()
+    }
+
+    /// Cheap liveness check used by the readiness probe (§6.2).
+    pub fn ping(&self) -> CoreResult<()> {
+        crate::util::on_conn(&self.conn(), |c| {
+            c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
+                .map_err(crate::util::map_err)?;
+            Ok(())
+        })
     }
 }

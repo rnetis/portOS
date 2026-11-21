@@ -13,8 +13,6 @@ version = "1.0.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
-description = "PortOS — Next-Generation Port Operations Management System (Phase 1 core platform)"
-authors = ["PortOS Engineering"]
 
 [workspace.dependencies]
 # internal crates

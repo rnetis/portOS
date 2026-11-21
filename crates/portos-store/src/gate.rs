@@ -6,8 +6,7 @@ use crate::Store;
 use chrono::{DateTime, Utc};
 use portos_core::container::ContainerNumber;
 use portos_core::gate::{
-    GateDirection, GateStatus, GateStep, GateTransaction, TruckAppointment,
-    AppointmentStatus,
+    AppointmentStatus, GateStatus, GateStep, GateTransaction, TruckAppointment,
 };
 use portos_core::ids::{AppointmentId, CustomerId, GateTxId};
 use portos_core::{CoreError, CoreResult};
@@ -31,7 +30,8 @@ fn row_to_appointment(r: &Row<'_>) -> rusqlite::Result<TruckAppointment> {
             uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?,
         ),
         reference: r.get("reference")?,
-        trucking_company: company.map(|s| CustomerId::from_uuid(uuid::Uuid::parse_str(&s).unwrap_or_default())),
+        trucking_company: company
+            .map(|s| CustomerId::from_uuid(uuid::Uuid::parse_str(&s).unwrap_or_default())),
         driver_name: r.get("driver_name")?,
         driver_license: r.get("driver_license")?,
         plate: r.get("plate")?,
@@ -42,8 +42,10 @@ fn row_to_appointment(r: &Row<'_>) -> rusqlite::Result<TruckAppointment> {
         direction: serde_json::from_str(&format!("\"{dir}\"")).map_err(|_| bad_row("direction"))?,
         slot_from: parse_ts(&r.get::<_, String>("slot_from")?).map_err(|_| bad_row("slot_from"))?,
         slot_to: parse_ts(&r.get::<_, String>("slot_to")?).map_err(|_| bad_row("slot_to"))?,
-        status: serde_json::from_str(&format!("\"{status}\"")).map_err(|_| bad_row(&format!("appt status raw={status:?}")))?,
-        created_at: parse_ts(&r.get::<_, String>("created_at")?).map_err(|_| bad_row("created_at"))?,
+        status: serde_json::from_str(&format!("\"{status}\""))
+            .map_err(|_| bad_row(&format!("appt status raw={status:?}")))?,
+        created_at: parse_ts(&r.get::<_, String>("created_at")?)
+            .map_err(|_| bad_row("created_at"))?,
     })
 }
 
@@ -71,32 +73,48 @@ pub fn create_appointment(store: &Store, a: &TruckAppointment) -> CoreResult<()>
 
 pub fn get_appointment(store: &Store, id: AppointmentId) -> CoreResult<TruckAppointment> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM truck_appointments WHERE id = ?1", [id.to_string()], row_to_appointment)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("appointment {id}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM truck_appointments WHERE id = ?1",
+            [id.to_string()],
+            row_to_appointment,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("appointment {id}"))
+            }
+            _ => map_err(e),
+        })
     })
 }
 
-pub fn get_appointment_by_reference(store: &Store, reference: &str) -> CoreResult<TruckAppointment> {
+pub fn get_appointment_by_reference(
+    store: &Store,
+    reference: &str,
+) -> CoreResult<TruckAppointment> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM truck_appointments WHERE reference = ?1", [reference], row_to_appointment)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("appointment {reference}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM truck_appointments WHERE reference = ?1",
+            [reference],
+            row_to_appointment,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("appointment {reference}"))
+            }
+            _ => map_err(e),
+        })
     })
 }
 
-pub fn update_appointment_status(store: &Store, id: AppointmentId, status: AppointmentStatus) -> CoreResult<()> {
+pub fn update_appointment_status(
+    store: &Store,
+    id: AppointmentId,
+    status: AppointmentStatus,
+) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         c.execute(
             "UPDATE truck_appointments SET status = ?2 WHERE id = ?1",
-            rusqlite::params![
-                id.to_string(),
-                crate::util::enum_str(&status)
-            ],
+            rusqlite::params![id.to_string(), crate::util::enum_str(&status)],
         )
         .map_err(map_err)?;
         Ok(())
@@ -116,13 +134,14 @@ pub fn list_appointments_in_window(
         let rows = stmt
             .query_map(rusqlite::params![ts(from), ts(to)], row_to_appointment)
             .map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
 pub fn count_appointments(store: &Store) -> CoreResult<i64> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT COUNT(*) FROM truck_appointments", [], |r| r.get(0)).map_err(map_err)
+        c.query_row("SELECT COUNT(*) FROM truck_appointments", [], |r| r.get(0))
+            .map_err(map_err)
     })
 }
 
@@ -138,8 +157,11 @@ fn row_to_gate_tx(r: &Row<'_>) -> rusqlite::Result<GateTransaction> {
     let expected: Option<String> = r.get("expected_container")?;
     let ocr: Option<String> = r.get("ocr_container")?;
     Ok(GateTransaction {
-        id: GateTxId::from_uuid(uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?),
-        appointment: appt.map(|s| AppointmentId::from_uuid(uuid::Uuid::parse_str(&s).unwrap_or_default())),
+        id: GateTxId::from_uuid(
+            uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?,
+        ),
+        appointment: appt
+            .map(|s| AppointmentId::from_uuid(uuid::Uuid::parse_str(&s).unwrap_or_default())),
         direction: serde_json::from_str(&format!("\"{dir}\"")).map_err(|_| bad_row("direction"))?,
         expected_container: expected
             .map(|s| ContainerNumber::parse(&s))
@@ -156,14 +178,19 @@ fn row_to_gate_tx(r: &Row<'_>) -> rusqlite::Result<GateTransaction> {
         steps: serde_json::from_str::<Vec<GateStep>>(&steps_json).map_err(|_| bad_row("steps"))?,
         status: serde_json::from_str(&format!("\"{status}\"")).map_err(|_| bad_row("status"))?,
         reject_reason: r.get("reject_reason")?,
-        started_at: parse_ts(&r.get::<_, String>("started_at")?).map_err(|_| bad_row("started_at"))?,
+        started_at: parse_ts(&r.get::<_, String>("started_at")?)
+            .map_err(|_| bad_row("started_at"))?,
         completed_at: parse_ts_opt(r.get("completed_at")?).map_err(|_| bad_row("completed_at"))?,
     })
 }
 
 /// Insert a transaction; when `idempotency_key` is set and already exists,
 /// the existing transaction is returned unchanged (retries are safe — §6.2).
-pub fn create_gate_tx(store: &Store, tx: &GateTransaction, idempotency_key: Option<&str>) -> CoreResult<GateTransaction> {
+pub fn create_gate_tx(
+    store: &Store,
+    tx: &GateTransaction,
+    idempotency_key: Option<&str>,
+) -> CoreResult<GateTransaction> {
     let inserted = on_conn(&store.conn(), |c| {
         c.execute(
             "INSERT OR IGNORE INTO gate_transactions (id, appointment_id, direction, expected_container, ocr_container,
@@ -188,29 +215,41 @@ pub fn create_gate_tx(store: &Store, tx: &GateTransaction, idempotency_key: Opti
     if inserted {
         Ok(tx.clone())
     } else {
-        get_gate_tx_by_idempotency_key(store, idempotency_key.ok_or_else(|| {
-            CoreError::Conflict("gate transaction conflict".into())
-        })?)
+        get_gate_tx_by_idempotency_key(
+            store,
+            idempotency_key
+                .ok_or_else(|| CoreError::Conflict("gate transaction conflict".into()))?,
+        )
     }
 }
 
 pub fn get_gate_tx(store: &Store, id: GateTxId) -> CoreResult<GateTransaction> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM gate_transactions WHERE id = ?1", [id.to_string()], row_to_gate_tx)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("gate tx {id}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM gate_transactions WHERE id = ?1",
+            [id.to_string()],
+            row_to_gate_tx,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("gate tx {id}")),
+            _ => map_err(e),
+        })
     })
 }
 
 pub fn get_gate_tx_by_idempotency_key(store: &Store, key: &str) -> CoreResult<GateTransaction> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM gate_transactions WHERE idempotency_key = ?1", [key], row_to_gate_tx)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("idempotency key {key}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM gate_transactions WHERE idempotency_key = ?1",
+            [key],
+            row_to_gate_tx,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("idempotency key {key}"))
+            }
+            _ => map_err(e),
+        })
     })
 }
 
@@ -234,7 +273,12 @@ pub fn update_gate_tx(store: &Store, tx: &GateTransaction) -> CoreResult<()> {
     })
 }
 
-pub fn list_recent_gate_tx(store: &Store, from: DateTime<Utc>, to: DateTime<Utc>, limit: u32) -> CoreResult<Vec<GateTransaction>> {
+pub fn list_recent_gate_tx(
+    store: &Store,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    limit: u32,
+) -> CoreResult<Vec<GateTransaction>> {
     on_conn(&store.conn(), |c| {
         let mut stmt = c
             .prepare("SELECT * FROM gate_transactions WHERE started_at >= ?1 AND started_at <= ?2 ORDER BY started_at DESC LIMIT ?3")
@@ -242,7 +286,7 @@ pub fn list_recent_gate_tx(store: &Store, from: DateTime<Utc>, to: DateTime<Utc>
         let rows = stmt
             .query_map(rusqlite::params![ts(from), ts(to), limit], row_to_gate_tx)
             .map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
@@ -253,8 +297,15 @@ pub fn list_recent_gate_tx(store: &Store, from: DateTime<Utc>, to: DateTime<Utc>
 pub fn save_gate_pass(store: &Store, pass: &portos_core::gate::GatePass) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         c.execute(
-            "INSERT INTO gate_passes (pass_no, gate_tx_id, issued_at, valid_until, qr_payload) VALUES (?1,?2,?3,?4,?5)",
-            rusqlite::params![pass.pass_no, pass.gate_tx.to_string(), ts(pass.issued_at), ts(pass.valid_until), pass.qr_payload],
+            "INSERT INTO gate_passes (pass_no, gate_tx_id, issued_at, valid_until, qr_payload, container_id, plate, direction)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            rusqlite::params![
+                pass.pass_no, pass.gate_tx.to_string(), ts(pass.issued_at),
+                ts(pass.valid_until), pass.qr_payload,
+                pass.container.as_ref().map(|c| c.as_str().to_string()),
+                pass.plate,
+                crate::util::enum_str(&pass.direction)
+            ],
         )
         .map_err(map_err)?;
         Ok(())
@@ -267,17 +318,26 @@ pub fn get_gate_pass(store: &Store, pass_no: &str) -> CoreResult<portos_core::ga
             "SELECT * FROM gate_passes WHERE pass_no = ?1",
             [pass_no],
             |r| {
+                let container: Option<String> = r.get("container_id")?;
+                let direction: String = r.get("direction")?;
                 Ok(portos_core::gate::GatePass {
-                    pass_no: r.get(0)?,
+                    pass_no: r.get("pass_no")?,
                     gate_tx: GateTxId::from_uuid(
-                        uuid::Uuid::parse_str(&r.get::<_, String>(1)?).map_err(|_| bad_row("gate_tx_id"))?,
+                        uuid::Uuid::parse_str(&r.get::<_, String>("gate_tx_id")?)
+                            .map_err(|_| bad_row("gate_tx_id"))?,
                     ),
-                    container: None,
-                    plate: String::new(),
-                    direction: GateDirection::Import,
-                    issued_at: parse_ts(&r.get::<_, String>(2)?).map_err(|_| bad_row("issued_at"))?,
-                    qr_payload: r.get(4)?,
-                    valid_until: parse_ts(&r.get::<_, String>(3)?).map_err(|_| bad_row("valid_until"))?,
+                    container: container
+                        .map(|s| ContainerNumber::parse(&s))
+                        .transpose()
+                        .map_err(|_| bad_row("container_id"))?,
+                    plate: r.get("plate")?,
+                    direction: serde_json::from_str(&format!("\"{}\"", direction))
+                        .map_err(|_| bad_row("direction"))?,
+                    issued_at: parse_ts(&r.get::<_, String>("issued_at")?)
+                        .map_err(|_| bad_row("issued_at"))?,
+                    qr_payload: r.get("qr_payload")?,
+                    valid_until: parse_ts(&r.get::<_, String>("valid_until")?)
+                        .map_err(|_| bad_row("valid_until"))?,
                 })
             },
         )
@@ -288,7 +348,10 @@ pub fn get_gate_pass(store: &Store, pass_no: &str) -> CoreResult<portos_core::ga
     })
 }
 
-pub fn save_eir(store: &Store, eir: &portos_core::gate::EquipmentInterchangeReport) -> CoreResult<()> {
+pub fn save_eir(
+    store: &Store,
+    eir: &portos_core::gate::EquipmentInterchangeReport,
+) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         c.execute(
             "INSERT INTO eirs (eir_no, gate_tx_id, container_id, condition, damages, signed_by, at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
@@ -306,7 +369,8 @@ pub fn save_eir(store: &Store, eir: &portos_core::gate::EquipmentInterchangeRepo
 
 pub fn count_gate_tx(store: &Store) -> CoreResult<i64> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT COUNT(*) FROM gate_transactions", [], |r| r.get(0)).map_err(map_err)
+        c.query_row("SELECT COUNT(*) FROM gate_transactions", [], |r| r.get(0))
+            .map_err(map_err)
     })
 }
 
@@ -323,7 +387,7 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use portos_core::gate::{GateTransaction, GateDirection};
+    use portos_core::gate::{GateDirection, GateTransaction};
 
     #[test]
     fn appointment_lifecycle() {
@@ -348,21 +412,52 @@ mod tests {
         update_appointment_status(&store, a.id, AppointmentStatus::CheckedIn).unwrap();
         let got = get_appointment(&store, a.id).unwrap();
         assert_eq!(got.status, AppointmentStatus::CheckedIn);
-        assert_eq!(list_appointments_in_window(&store, Utc::now() - chrono::Duration::hours(1), Utc::now() + chrono::Duration::hours(2)).unwrap().len(), 1);
+        assert_eq!(
+            list_appointments_in_window(
+                &store,
+                Utc::now() - chrono::Duration::hours(1),
+                Utc::now() + chrono::Duration::hours(2)
+            )
+            .unwrap()
+            .len(),
+            1
+        );
     }
 
     #[test]
     fn gate_tx_idempotency() {
         let store = Store::open_in_memory().unwrap();
-        let tx = GateTransaction::start(GateDirection::Export, None, None, "12A34567", "DL-1", "L1", Utc::now());
+        let tx = GateTransaction::start(
+            GateDirection::Export,
+            None,
+            None,
+            "12A34567",
+            "DL-1",
+            "L1",
+            Utc::now(),
+        );
         let first = create_gate_tx(&store, &tx, Some("key-1")).unwrap();
         let again = create_gate_tx(&store, &tx, Some("key-1")).unwrap();
         assert_eq!(first.id, again.id);
         assert!(get_gate_tx(&store, first.id).is_ok());
 
-        let mut tx2 = GateTransaction::start(GateDirection::Import, None, None, "P", "D", "L2", Utc::now());
+        let mut tx2 = GateTransaction::start(
+            GateDirection::Import,
+            None,
+            None,
+            "P",
+            "D",
+            "L2",
+            Utc::now(),
+        );
         create_gate_tx(&store, &tx2, None).unwrap();
-        tx2.apply(portos_core::gate::GateStepKind::AppointmentCheck, true, None, Utc::now()).unwrap();
+        tx2.apply(
+            portos_core::gate::GateStepKind::AppointmentCheck,
+            true,
+            None,
+            Utc::now(),
+        )
+        .unwrap();
         update_gate_tx(&store, &tx2).unwrap();
         let got = get_gate_tx(&store, tx2.id).unwrap();
         assert_eq!(got.steps.len(), 1);

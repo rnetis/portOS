@@ -74,7 +74,7 @@ pub fn wrap_ltr_runs(text: &str) -> String {
         let keep = is_ltr_id_char(ch)
             || (!run.is_empty()
                 && is_zwj_zwnj_or_space(ch)
-                && chars.get(i + 1).copied().map_or(false, is_ltr_id_char));
+                && chars.get(i + 1).copied().is_some_and(is_ltr_id_char));
         if keep {
             run.push(ch);
         } else {
@@ -116,9 +116,9 @@ pub fn collation_key(s: &str) -> String {
         .chars()
         .filter(|c| {
             // Strip ZWNJ/ZWJ, Arabic diacritics (tashkil), tatweel.
-            !matches!(c,
-                '\u{200C}' | '\u{200D}'
-                | '\u{0640}' | '\u{064B}'..='\u{065F}' | '\u{0670}'
+            !matches!(
+                c,
+                '\u{200C}' | '\u{200D}' | '\u{0640}' | '\u{064B}'..='\u{065F}' | '\u{0670}'
             )
         })
         .flat_map(|c| c.to_lowercase())
@@ -150,7 +150,10 @@ mod tests {
         // Arabic Yeh/Kaf typed on an Arabic keyboard must equal Farsi chars.
         assert_eq!(normalize_persian_chars("شركت"), "شرکت");
         assert_eq!(normalize_persian_chars("سازي"), "سازی");
-        assert_eq!(collation_key("شرکت بازرگانی"), collation_key("شركت بازرگاني"));
+        assert_eq!(
+            collation_key("شرکت بازرگانی"),
+            collation_key("شركت بازرگاني")
+        );
     }
 
     #[test]

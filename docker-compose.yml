@@ -8,14 +8,15 @@ services:
       PORTOS_TENANT: ${PORTOS_TENANT:-IRBND-CT1}
       PORTOS_LOG_FORMAT: json
       PORTOS_REQUIRE_SECRET: "1"
-      PORTOS_DEFAULT_LOCALE: fa
+      PORTOS_DEFAULT_LOCALE: ${PORTOS_DEFAULT_LOCALE:-en}
       PORTOS_I18N_EXTRA_DIRS: /etc/portos/i18n
     volumes:
       - portos-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "command -v wget >/dev/null && wget -qO- http://localhost:8080/healthz || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
+      start_period: 10s
       retries: 3
     restart: unless-stopped
 

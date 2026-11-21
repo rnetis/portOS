@@ -82,14 +82,21 @@ impl CoarriMessage {
                     if let Some(e) = cur.take() {
                         msg.entries.push(e);
                     }
-                    let number = seg.el(1).ok_or(EdiError::MissingElement("container number", "EQD"))?;
+                    let number = seg
+                        .el(1)
+                        .ok_or(EdiError::MissingElement("container number", "EQD"))?;
                     let container = ContainerNumber::parse(number)
                         .map_err(|_| EdiError::InvalidValue(number.to_string(), "EQD container"))?;
                     let size_type = seg
                         .el(2)
                         .map(IsoSizeType::parse)
                         .transpose()
-                        .map_err(|_| EdiError::InvalidValue(seg.el(2).unwrap_or_default().into(), "EQD size/type"))?
+                        .map_err(|_| {
+                            EdiError::InvalidValue(
+                                seg.el(2).unwrap_or_default().into(),
+                                "EQD size/type",
+                            )
+                        })?
                         .unwrap_or(IsoSizeType::parse("22G1").unwrap());
                     cur = Some(CoarriEntry {
                         container,
@@ -153,10 +160,18 @@ impl CoarriMessage {
 
     #[must_use]
     pub fn emit(&self, sender: &str, recipient: &str, now: DateTime<Utc>) -> String {
-        let mut segs = vec![envelope::unb(sender, recipient, &dt::emit_203(now), &self.message_ref)];
+        let mut segs = vec![envelope::unb(
+            sender,
+            recipient,
+            &dt::emit_203(now),
+            &self.message_ref,
+        )];
         segs.push(envelope::unh(&self.message_ref, "COARRI"));
         for e in &self.entries {
-            segs.push(Segment::build("EQD", &[&["CN"], &[e.container.as_str()], &[e.size_type.as_str()]]));
+            segs.push(Segment::build(
+                "EQD",
+                &[&["CN"], &[e.container.as_str()], &[e.size_type.as_str()]],
+            ));
             if let Some(r) = &e.job_reference {
                 segs.push(Segment::build("RFF", &[&["TRN"], &[r]]));
             }
@@ -174,7 +189,11 @@ impl CoarriMessage {
         let count = segs.len() + 1;
         segs.push(envelope::unt(count, &self.message_ref));
         segs.push(envelope::unz(1, &self.message_ref));
-        Interchange { una: crate::syntax::Una::default(), segments: segs }.serialize()
+        Interchange {
+            una: crate::syntax::Una::default(),
+            segments: segs,
+        }
+        .serialize()
     }
 }
 
@@ -204,7 +223,10 @@ mod tests {
         assert_eq!(e.crane.as_deref(), Some("QC-03"));
         assert_eq!(e.job_reference.as_deref(), Some("JOB-00012"));
         assert_eq!(e.started_at.to_rfc3339(), "2026-11-22T09:00:15+00:00");
-        assert_eq!(e.finished_at.unwrap().to_rfc3339(), "2026-11-22T09:01:45+00:00");
+        assert_eq!(
+            e.finished_at.unwrap().to_rfc3339(),
+            "2026-11-22T09:01:45+00:00"
+        );
         assert_eq!(e.status, "1");
         assert_eq!(e.move_type, JobKind::Discharge);
 

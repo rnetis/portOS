@@ -70,18 +70,14 @@ pub fn group_thousands(digits: &str, sep: char) -> String {
 /// Parse an integer accepting Persian, Arabic-Indic and Western digits.
 pub fn parse_i64(s: &str) -> Result<i64, String> {
     let normalized = normalize_numerals(s).replace(',', "");
-    normalized
-        .parse::<i64>()
-        .map_err(|e| format!("{s:?}: {e}"))
+    normalized.parse::<i64>().map_err(|e| format!("{s:?}: {e}"))
 }
 
 /// Parse a decimal number accepting both digit systems and both
 /// decimal separators.
 pub fn parse_f64(s: &str) -> Result<f64, String> {
     let normalized = normalize_numerals(s).replace(',', "");
-    normalized
-        .parse::<f64>()
-        .map_err(|e| format!("{s:?}: {e}"))
+    normalized.parse::<f64>().map_err(|e| format!("{s:?}: {e}"))
 }
 
 #[cfg(test)]
@@ -93,7 +89,10 @@ mod tests {
         assert_eq!(to_persian_digits("1405/08/30"), "۱۴۰۵/۰۸/۳۰");
         assert_eq!(to_western_digits("۱۴۰۵/۰۸/۳۰"), "1405/08/30");
         assert_eq!(to_western_digits("٠١٢٣"), "0123");
-        assert_eq!(to_western_digits(&to_persian_digits("2026-11-21")), "2026-11-21");
+        assert_eq!(
+            to_western_digits(&to_persian_digits("2026-11-21")),
+            "2026-11-21"
+        );
     }
 
     #[test]
@@ -105,7 +104,10 @@ mod tests {
     #[test]
     fn grouping() {
         assert_eq!(group_thousands("850000", ','), "850,000");
-        assert_eq!(group_thousands("1234567", '\u{066C}'), "1\u{066C}234\u{066C}567");
+        assert_eq!(
+            group_thousands("1234567", '\u{066C}'),
+            "1\u{066C}234\u{066C}567"
+        );
         assert_eq!(group_thousands("-9876", ','), "-9,876");
     }
 

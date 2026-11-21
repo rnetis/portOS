@@ -71,8 +71,8 @@ impl Catalog {
 
     /// Load a catalog from a JSON file on disk.
     pub fn load_file(path: &Path) -> Result<Catalog, String> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         Catalog::from_json(&text)
     }
 
@@ -101,7 +101,6 @@ impl Catalog {
     }
 
     /// All keys (for tooling / QA completeness checks).
-    #[must_use]
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(String::as_str)
     }
@@ -131,8 +130,7 @@ impl CatalogSet {
     /// Unknown locale files are ignored with a returned warning.
     pub fn load_overrides(&mut self, dir: &Path) -> Result<Vec<String>, String> {
         let mut warnings = Vec::new();
-        let entries = std::fs::read_dir(dir)
-            .map_err(|e| format!("read {}: {e}", dir.display()))?;
+        let entries = std::fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -200,7 +198,10 @@ mod tests {
         assert!(!fa.is_empty());
         assert!(fa.contains("MSKU3881107"), "{fa}");
         // Unknown key falls back to the key itself.
-        assert_eq!(set.t(Locale::En, "no.such.key", &Args::new()), "no.such.key");
+        assert_eq!(
+            set.t(Locale::En, "no.such.key", &Args::new()),
+            "no.such.key"
+        );
     }
 
     #[test]
@@ -232,7 +233,11 @@ mod tests {
         std::fs::write(&p, r#"{"gate.tx.started":"Truck {plate} is at the gate"}"#).unwrap();
         let warns = set.load_overrides(&tmp).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
-        let msg = set.t(Locale::En, "gate.tx.started", &Args::new().arg("plate", "12A34567"));
+        let msg = set.t(
+            Locale::En,
+            "gate.tx.started",
+            &Args::new().arg("plate", "12A34567"),
+        );
         assert_eq!(msg, "Truck 12A34567 is at the gate");
         std::fs::remove_dir_all(&tmp).ok();
     }

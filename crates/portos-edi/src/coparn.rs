@@ -87,8 +87,7 @@ impl CoparnMessage {
         for seg in segs {
             match seg.tag.as_str() {
                 "UNH" => {
-                    msg.message_ref =
-                        seg.el(0).unwrap_or_default().to_string();
+                    msg.message_ref = seg.el(0).unwrap_or_default().to_string();
                 }
                 "TDT" => {
                     msg.voyage = seg.el(1).map(str::to_string);
@@ -99,9 +98,10 @@ impl CoparnMessage {
                 }
                 "DTM" if seg.el(0) == Some("132") => {
                     if let Some(raw) = seg.el(1) {
-                        msg.eta_utc = Some(dt::parse_203(raw).map_err(|_| {
-                            EdiError::InvalidValue(raw.to_string(), "DTM+132")
-                        })?);
+                        msg.eta_utc = Some(
+                            dt::parse_203(raw)
+                                .map_err(|_| EdiError::InvalidValue(raw.to_string(), "DTM+132"))?,
+                        );
                     }
                 }
                 "EQD" => {
@@ -114,21 +114,26 @@ impl CoparnMessage {
                     let number = seg
                         .el(1)
                         .ok_or(EdiError::MissingElement("container number", "EQD"))?;
-                    let container = ContainerNumber::parse(number).map_err(|_| {
-                        EdiError::InvalidValue(number.to_string(), "EQD container")
-                    })?;
+                    let container = ContainerNumber::parse(number)
+                        .map_err(|_| EdiError::InvalidValue(number.to_string(), "EQD container"))?;
                     let size_type = seg
                         .el(2)
                         .map(IsoSizeType::parse)
                         .transpose()
-                        .map_err(|_| EdiError::InvalidValue(
-                            seg.el(2).unwrap_or_default().to_string(),
-                            "EQD size/type",
-                        ))?
+                        .map_err(|_| {
+                            EdiError::InvalidValue(
+                                seg.el(2).unwrap_or_default().to_string(),
+                                "EQD size/type",
+                            )
+                        })?
                         .unwrap_or(IsoSizeType::parse("22G1").unwrap());
                     // EQD+CN+NUM+SIZE+<status 5=full/6=empty>; movement in STS.
                     let full = seg.el(3).map(|s| s != "6").unwrap_or(true);
-                    let movement = if full { Movement::Load } else { Movement::Discharge };
+                    let movement = if full {
+                        Movement::Load
+                    } else {
+                        Movement::Discharge
+                    };
                     cur = Some(CoparnEntry {
                         container,
                         size_type,
@@ -148,10 +153,7 @@ impl CoparnMessage {
                 "MEA" if seg.el(0) == Some("WT") => {
                     if let Some(entry) = cur.as_mut() {
                         // Element 2 is a composite: KGM:24000 — take last comp.
-                        let val = seg
-                            .comps(2)
-                            .last()
-                            .and_then(|v| v.parse::<u32>().ok());
+                        let val = seg.comps(2).last().and_then(|v| v.parse::<u32>().ok());
                         entry.weight_kg = val;
                     }
                 }
@@ -175,7 +177,12 @@ impl CoparnMessage {
     /// Serialize to a full interchange text with envelope.
     #[must_use]
     pub fn emit(&self, sender: &str, recipient: &str, now: DateTime<Utc>) -> String {
-        let mut segs = vec![envelope::unb(sender, recipient, &dt::emit_203(now), &self.message_ref)];
+        let mut segs = vec![envelope::unb(
+            sender,
+            recipient,
+            &dt::emit_203(now),
+            &self.message_ref,
+        )];
         segs.push(envelope::unh(&self.message_ref, "COPARN"));
         let mut tdt_elements: Vec<&[&str]> = vec![&["20"]];
         let voyage: Vec<&str> = self
@@ -219,7 +226,12 @@ impl CoparnMessage {
             let full_code = if e.full { "5" } else { "6" };
             segs.push(Segment::build(
                 "EQD",
-                &[&["CN"], &[e.container.as_str()], &[e.size_type.as_str()], &[full_code]],
+                &[
+                    &["CN"],
+                    &[e.container.as_str()],
+                    &[e.size_type.as_str()],
+                    &[full_code],
+                ],
             ));
             segs.push(Segment::build("STS", &[&[status]]));
             if let Some(w) = e.weight_kg {
@@ -230,7 +242,10 @@ impl CoparnMessage {
         let count = segs.len() + 1;
         segs.push(envelope::unt(count, &self.message_ref));
         segs.push(envelope::unz(1, &self.message_ref));
-        let ic = Interchange { una: crate::syntax::Una::default(), segments: segs };
+        let ic = Interchange {
+            una: crate::syntax::Una::default(),
+            segments: segs,
+        };
         ic.serialize()
     }
 }
@@ -263,7 +278,10 @@ mod tests {
         assert_eq!(msg.entries[0].movement, Movement::Load);
         assert!(msg.entries[0].full);
         assert_eq!(msg.entries[0].weight_kg, Some(24_000));
-        assert_eq!(msg.eta_utc.unwrap().to_rfc3339(), "2026-11-22T09:00:00+00:00");
+        assert_eq!(
+            msg.eta_utc.unwrap().to_rfc3339(),
+            "2026-11-22T09:00:00+00:00"
+        );
 
         let emitted = msg.emit("LINE:ZZZ", "IRBNDCT:ZZZ", Utc::now());
         let ic2 = Interchange::parse(&emitted).unwrap();

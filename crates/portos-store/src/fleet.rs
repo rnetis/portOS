@@ -7,9 +7,7 @@ use chrono::{DateTime, Utc};
 use portos_core::berth::{Berth, BerthAllocation, CargoType};
 use portos_core::container::IsoSizeType;
 use portos_core::ids::{AllocationId, BerthId, CallId, CustomerId, VesselId};
-use portos_core::vessel::{
-    CallStatus, ImoNumber, UnLocode, Vessel, VesselCall,
-};
+use portos_core::vessel::{CallStatus, ImoNumber, UnLocode, Vessel, VesselCall};
 use portos_core::{CoreError, CoreResult};
 use rusqlite::Row;
 
@@ -42,7 +40,8 @@ fn row_to_vessel(r: &Row<'_>) -> rusqlite::Result<Vessel> {
         dwt_t: r.get::<_, i64>("dwt_t")? as u32,
         reefer_points: r.get::<_, i64>("reefer_points")? as u16,
         gearless: r.get::<_, i64>("gearless")? != 0,
-        customer: customer.map(|s| CustomerId::from_uuid(parse_uuid(s, "customer_id").ok().unwrap_or_default())),
+        customer: customer
+            .map(|s| CustomerId::from_uuid(parse_uuid(s, "customer_id").ok().unwrap_or_default())),
     })
 }
 
@@ -65,25 +64,33 @@ pub fn create_vessel(store: &Store, v: &Vessel) -> CoreResult<()> {
 
 pub fn list_vessels(store: &Store) -> CoreResult<Vec<Vessel>> {
     on_conn(&store.conn(), |c| {
-        let mut stmt = c.prepare("SELECT * FROM vessels ORDER BY name_en").map_err(map_err)?;
+        let mut stmt = c
+            .prepare("SELECT * FROM vessels ORDER BY name_en")
+            .map_err(map_err)?;
         let rows = stmt.query_map([], row_to_vessel).map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
 pub fn get_vessel(store: &Store, id: VesselId) -> CoreResult<Vessel> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM vessels WHERE id = ?1", [id.to_string()], row_to_vessel)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("vessel {id}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM vessels WHERE id = ?1",
+            [id.to_string()],
+            row_to_vessel,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("vessel {id}")),
+            _ => map_err(e),
+        })
     })
 }
 
 pub fn get_vessel_by_imo(store: &Store, imo: &str) -> CoreResult<Option<Vessel>> {
     on_conn(&store.conn(), |c| {
-        let mut stmt = c.prepare("SELECT * FROM vessels WHERE imo = ?1").map_err(map_err)?;
+        let mut stmt = c
+            .prepare("SELECT * FROM vessels WHERE imo = ?1")
+            .map_err(map_err)?;
         let mut rows = stmt.query_map([imo], row_to_vessel).map_err(map_err)?;
         match rows.next() {
             Some(row) => Ok(Some(row.map_err(map_err)?)),
@@ -108,15 +115,20 @@ fn row_to_call(r: &Row<'_>) -> rusqlite::Result<VesselCall> {
         port: UnLocode::parse(&r.get::<_, String>("port")?).map_err(|_| bad_row("port"))?,
         eta_utc: parse_ts(&eta).map_err(|_| bad_row("eta_utc"))?,
         etd_utc: parse_ts_opt(etd).map_err(|_| bad_row("etd_utc"))?,
-        status: serde_json::from_str::<CallStatus>(&format!("\"{status}\"")).map_err(|_| bad_row(&format!("status raw={status:?}")))?,
+        status: serde_json::from_str::<CallStatus>(&format!("\"{status}\""))
+            .map_err(|_| bad_row(&format!("status raw={status:?}")))?,
         cargo_mix: serde_json::from_str(&cargo_json).map_err(|_| bad_row("cargo_mix"))?,
-        anchorage_arrived_at: parse_ts_opt(r.get("anchorage_arrived_at")?).map_err(|_| bad_row("anchorage_arrived_at"))?,
+        anchorage_arrived_at: parse_ts_opt(r.get("anchorage_arrived_at")?)
+            .map_err(|_| bad_row("anchorage_arrived_at"))?,
         berthed_at: parse_ts_opt(r.get("berthed_at")?).map_err(|_| bad_row("berthed_at"))?,
-        work_completed_at: parse_ts_opt(r.get("work_completed_at")?).map_err(|_| bad_row("work_completed_at"))?,
+        work_completed_at: parse_ts_opt(r.get("work_completed_at")?)
+            .map_err(|_| bad_row("work_completed_at"))?,
         departed_at: parse_ts_opt(r.get("departed_at")?).map_err(|_| bad_row("departed_at"))?,
         created_by: r.get("created_by")?,
-        created_at: parse_ts(&r.get::<_, String>("created_at")?).map_err(|_| bad_row("created_at"))?,
-        updated_at: parse_ts(&r.get::<_, String>("updated_at")?).map_err(|_| bad_row("updated_at"))?,
+        created_at: parse_ts(&r.get::<_, String>("created_at")?)
+            .map_err(|_| bad_row("created_at"))?,
+        updated_at: parse_ts(&r.get::<_, String>("updated_at")?)
+            .map_err(|_| bad_row("updated_at"))?,
     })
 }
 
@@ -143,28 +155,43 @@ pub fn create_call(store: &Store, call: &VesselCall) -> CoreResult<()> {
 
 pub fn get_call(store: &Store, id: CallId) -> CoreResult<VesselCall> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM vessel_calls WHERE id = ?1", [id.to_string()], row_to_call)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("call {id}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM vessel_calls WHERE id = ?1",
+            [id.to_string()],
+            row_to_call,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("call {id}")),
+            _ => map_err(e),
+        })
     })
 }
 
-pub fn list_calls(store: &Store, status: Option<CallStatus>, from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>, limit: u32) -> CoreResult<Vec<VesselCall>> {
+pub fn list_calls(
+    store: &Store,
+    status: Option<CallStatus>,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    limit: u32,
+) -> CoreResult<Vec<VesselCall>> {
     on_conn(&store.conn(), |c| {
         let mut sql = String::from("SELECT * FROM vessel_calls WHERE 1=1");
         if status.is_some() {
             sql.push_str(" AND status = ?1");
         }
         if from.is_some() {
-            sql.push_str(&format!(" AND eta_utc >= ?{}", if status.is_some() { 2 } else { 1 }));
+            sql.push_str(&format!(
+                " AND eta_utc >= ?{}",
+                if status.is_some() { 2 } else { 1 }
+            ));
         }
         if to.is_some() {
             let base = if status.is_some() { 1 } else { 0 } + if from.is_some() { 1 } else { 0 };
             sql.push_str(&format!(" AND eta_utc <= ?{}", base + 1));
         }
-        let base = if status.is_some() { 1 } else { 0 } + if from.is_some() { 1 } else { 0 } + if to.is_some() { 1 } else { 0 };
+        let base = if status.is_some() { 1 } else { 0 }
+            + if from.is_some() { 1 } else { 0 }
+            + if to.is_some() { 1 } else { 0 };
         sql.push_str(&format!(" ORDER BY eta_utc DESC LIMIT ?{}", base + 1));
 
         let mut stmt = c.prepare(&sql).map_err(map_err)?;
@@ -179,13 +206,23 @@ pub fn list_calls(store: &Store, status: Option<CallStatus>, from: Option<DateTi
             params.push(Box::new(ts(t)));
         }
         params.push(Box::new(limit));
-        let pref: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref() as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(pref.as_slice(), row_to_call).map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        let pref: Vec<&dyn rusqlite::ToSql> = params
+            .iter()
+            .map(|p| p.as_ref() as &dyn rusqlite::ToSql)
+            .collect();
+        let rows = stmt
+            .query_map(pref.as_slice(), row_to_call)
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
-pub fn update_call_status(store: &Store, id: CallId, status: CallStatus, stamp: Option<DateTime<Utc>>) -> CoreResult<()> {
+pub fn update_call_status(
+    store: &Store,
+    id: CallId,
+    status: CallStatus,
+    stamp: Option<DateTime<Utc>>,
+) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         let status_str = crate::util::enum_str(&status);
         let (col, col_val): (&str, Option<String>) = match status {
@@ -204,7 +241,12 @@ pub fn update_call_status(store: &Store, id: CallId, status: CallStatus, stamp: 
     })
 }
 
-pub fn update_call_eta(store: &Store, id: CallId, eta: DateTime<Utc>, etd: Option<DateTime<Utc>>) -> CoreResult<()> {
+pub fn update_call_eta(
+    store: &Store,
+    id: CallId,
+    eta: DateTime<Utc>,
+    etd: Option<DateTime<Utc>>,
+) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         c.execute(
             "UPDATE vessel_calls SET eta_utc = ?2, etd_utc = COALESCE(?3, etd_utc), updated_at = ?4 WHERE id = ?1",
@@ -255,25 +297,43 @@ pub fn create_berth(store: &Store, b: &Berth) -> CoreResult<()> {
 
 pub fn list_berths(store: &Store) -> CoreResult<Vec<Berth>> {
     on_conn(&store.conn(), |c| {
-        let mut stmt = c.prepare("SELECT * FROM berths ORDER BY code").map_err(map_err)?;
+        let mut stmt = c
+            .prepare("SELECT * FROM berths ORDER BY code")
+            .map_err(map_err)?;
         let rows = stmt.query_map([], row_to_berth).map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
 pub fn get_berth(store: &Store, id: BerthId) -> CoreResult<Berth> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM berths WHERE id = ?1", [id.to_string()], row_to_berth)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("berth {id}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM berths WHERE id = ?1",
+            [id.to_string()],
+            row_to_berth,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("berth {id}")),
+            _ => map_err(e),
+        })
     })
 }
 
 // --------------------------------------------------------------------------
 // Berth requests & allocations
 // --------------------------------------------------------------------------
+
+/// An open berth request: id, requested from, requested to, priority, reason.
+pub type OpenBerthRequest = (
+    AllocationId,
+    DateTime<Utc>,
+    DateTime<Utc>,
+    u8,
+    Option<String>,
+);
+
+/// A berth occupancy interval.
+pub type BerthOccupancy = (BerthId, DateTime<Utc>, DateTime<Utc>);
 
 pub fn create_berth_request(
     store: &Store,
@@ -295,26 +355,27 @@ pub fn create_berth_request(
     })
 }
 
-pub fn open_request_for_call(store: &Store, call: CallId) -> CoreResult<Option<(AllocationId, DateTime<Utc>, DateTime<Utc>, u8, Option<String>)>> {
+pub fn open_request_for_call(store: &Store, call: CallId) -> CoreResult<Option<OpenBerthRequest>> {
     on_conn(&store.conn(), |c| {
         let mut stmt = c
             .prepare("SELECT id, requested_from, requested_to, priority, reason FROM berth_requests WHERE call_id = ?1 AND status = 'open' ORDER BY created_at DESC LIMIT 1")
             .map_err(map_err)?;
-        let mut rows = stmt.query_map([call.to_string()], |r| {
-            let id_s: String = r.get(0)?;
-            let from_s: String = r.get(1)?;
-            let to_s: String = r.get(2)?;
-            let priority: i64 = r.get(3)?;
-            let reason: Option<String> = r.get(4)?;
-            Ok((
-                AllocationId::from_uuid(parse_uuid(id_s, "id")?),
-                parse_ts(&from_s).map_err(|_| bad_row("requested_from"))?,
-                parse_ts(&to_s).map_err(|_| bad_row("requested_to"))?,
-                priority.clamp(1, 5) as u8,
-                reason,
-            ))
-        })
-        .map_err(map_err)?;
+        let mut rows = stmt
+            .query_map([call.to_string()], |r| {
+                let id_s: String = r.get(0)?;
+                let from_s: String = r.get(1)?;
+                let to_s: String = r.get(2)?;
+                let priority: i64 = r.get(3)?;
+                let reason: Option<String> = r.get(4)?;
+                Ok((
+                    AllocationId::from_uuid(parse_uuid(id_s, "id")?),
+                    parse_ts(&from_s).map_err(|_| bad_row("requested_from"))?,
+                    parse_ts(&to_s).map_err(|_| bad_row("requested_to"))?,
+                    priority.clamp(1, 5) as u8,
+                    reason,
+                ))
+            })
+            .map_err(map_err)?;
         match rows.next() {
             Some(row) => Ok(Some(row.map_err(map_err)?)),
             None => Ok(None),
@@ -324,8 +385,11 @@ pub fn open_request_for_call(store: &Store, call: CallId) -> CoreResult<Option<(
 
 pub fn mark_request_allocated(store: &Store, request: AllocationId) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
-        c.execute("UPDATE berth_requests SET status = 'allocated' WHERE id = ?1", [request.to_string()])
-            .map_err(map_err)?;
+        c.execute(
+            "UPDATE berth_requests SET status = 'allocated' WHERE id = ?1",
+            [request.to_string()],
+        )
+        .map_err(map_err)?;
         Ok(())
     })
 }
@@ -336,12 +400,15 @@ fn row_to_allocation(r: &Row<'_>) -> rusqlite::Result<BerthAllocation> {
         id: AllocationId::from_uuid(parse_uuid(r.get("id")?, "id")?),
         call: CallId::from_uuid(parse_uuid(r.get("call_id")?, "call_id")?),
         berth: BerthId::from_uuid(parse_uuid(r.get("berth_id")?, "berth_id")?),
-        planned_from: parse_ts(&r.get::<_, String>("planned_from")?).map_err(|_| bad_row("planned_from"))?,
-        planned_to: parse_ts(&r.get::<_, String>("planned_to")?).map_err(|_| bad_row("planned_to"))?,
+        planned_from: parse_ts(&r.get::<_, String>("planned_from")?)
+            .map_err(|_| bad_row("planned_from"))?,
+        planned_to: parse_ts(&r.get::<_, String>("planned_to")?)
+            .map_err(|_| bad_row("planned_to"))?,
         score: r.get("score")?,
         reasons: serde_json::from_str(&reasons_json).unwrap_or_default(),
         decided_by: r.get("decided_by")?,
-        decided_at: parse_ts(&r.get::<_, String>("decided_at")?).map_err(|_| bad_row("decided_at"))?,
+        decided_at: parse_ts(&r.get::<_, String>("decided_at")?)
+            .map_err(|_| bad_row("decided_at"))?,
     })
 }
 
@@ -367,13 +434,19 @@ pub fn list_allocations_for_call(store: &Store, call: CallId) -> CoreResult<Vec<
         let mut stmt = c
             .prepare("SELECT * FROM berth_allocations WHERE call_id = ?1 ORDER BY decided_at DESC")
             .map_err(map_err)?;
-        let rows = stmt.query_map([call.to_string()], row_to_allocation).map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        let rows = stmt
+            .query_map([call.to_string()], row_to_allocation)
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
 /// Occupancy intervals overlapping `[from, to]` — input to the allocator.
-pub fn occupancy_between(store: &Store, from: DateTime<Utc>, to: DateTime<Utc>) -> CoreResult<Vec<(BerthId, DateTime<Utc>, DateTime<Utc>)>> {
+pub fn occupancy_between(
+    store: &Store,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> CoreResult<Vec<BerthOccupancy>> {
     on_conn(&store.conn(), |c| {
         let mut stmt = c
             .prepare("SELECT berth_id, planned_from, planned_to FROM berth_allocations WHERE planned_to > ?1 AND planned_from < ?2")
@@ -390,7 +463,7 @@ pub fn occupancy_between(store: &Store, from: DateTime<Utc>, to: DateTime<Utc>) 
                 ))
             })
             .map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
@@ -438,7 +511,11 @@ mod tests {
             eta_utc: Utc::now() + Duration::hours(24),
             etd_utc: Some(Utc::now() + Duration::hours(48)),
             status: CallStatus::Scheduled,
-            cargo_mix: CargoMix { discharge_teu: 1200, load_teu: 800, ..Default::default() },
+            cargo_mix: CargoMix {
+                discharge_teu: 1200,
+                load_teu: 800,
+                ..Default::default()
+            },
             anchorage_arrived_at: None,
             berthed_at: None,
             work_completed_at: None,
@@ -451,11 +528,18 @@ mod tests {
         let got = get_call(&store, call.id).unwrap();
         assert_eq!(got.cargo_mix.discharge_teu, 1200);
         assert_eq!(got.status, CallStatus::Scheduled);
-        update_call_status(&store, call.id, CallStatus::AnchorageArrived, Some(Utc::now())).unwrap();
+        update_call_status(
+            &store,
+            call.id,
+            CallStatus::AnchorageArrived,
+            Some(Utc::now()),
+        )
+        .unwrap();
         let got = get_call(&store, call.id).unwrap();
         assert!(got.anchorage_arrived_at.is_some());
         assert_eq!(got.status, CallStatus::AnchorageArrived);
-        let listed = list_calls(&store, Some(CallStatus::AnchorageArrived), None, None, 10).unwrap();
+        let listed =
+            list_calls(&store, Some(CallStatus::AnchorageArrived), None, None, 10).unwrap();
         assert_eq!(listed.len(), 1);
     }
 
@@ -506,26 +590,38 @@ mod tests {
         let v = vessel();
         create_vessel(&store, &v).unwrap();
         let call = CallId::generate();
-        create_call(&store, &VesselCall {
-            id: call,
-            vessel: v.id,
-            voyage_code: "V001".into(),
-            port: UnLocode::parse("IRBND").unwrap(),
-            eta_utc: Utc::now(),
-            etd_utc: None,
-            status: CallStatus::Scheduled,
-            cargo_mix: CargoMix::default(),
-            anchorage_arrived_at: None,
-            berthed_at: None,
-            work_completed_at: None,
-            departed_at: None,
-            created_by: "tester".into(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
+        create_call(
+            &store,
+            &VesselCall {
+                id: call,
+                vessel: v.id,
+                voyage_code: "V001".into(),
+                port: UnLocode::parse("IRBND").unwrap(),
+                eta_utc: Utc::now(),
+                etd_utc: None,
+                status: CallStatus::Scheduled,
+                cargo_mix: CargoMix::default(),
+                anchorage_arrived_at: None,
+                berthed_at: None,
+                work_completed_at: None,
+                departed_at: None,
+                created_by: "tester".into(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+        )
         .unwrap();
         let req = AllocationId::generate();
-        create_berth_request(&store, req, call, Utc::now(), Utc::now() + Duration::hours(24), 2, Some("reefer heavy")).unwrap();
+        create_berth_request(
+            &store,
+            req,
+            call,
+            Utc::now(),
+            Utc::now() + Duration::hours(24),
+            2,
+            Some("reefer heavy"),
+        )
+        .unwrap();
         let (rid, _, _, prio, reason) = open_request_for_call(&store, call).unwrap().unwrap();
         assert_eq!(rid, req);
         assert_eq!(prio, 2);

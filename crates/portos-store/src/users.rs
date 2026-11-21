@@ -14,6 +14,8 @@ use rusqlite::Connection;
 pub struct UserRow {
     pub id: UserId,
     pub username: String,
+    /// Never serialized by HTTP handlers (F-44, §6.3).
+    #[serde(skip_serializing)]
     pub password_hash: String,
     pub display_name: String,
     pub role: String,
@@ -26,11 +28,7 @@ pub struct UserRow {
 }
 
 fn bad_row(col: &str) -> rusqlite::Error {
-    rusqlite::Error::InvalidColumnType(
-        0,
-        col.to_string(),
-        rusqlite::types::Type::Text,
-    )
+    rusqlite::Error::InvalidColumnType(0, col.to_string(), rusqlite::types::Type::Text)
 }
 
 fn row_ts(r: &rusqlite::Row<'_>, col: &str) -> rusqlite::Result<chrono::DateTime<chrono::Utc>> {
@@ -59,6 +57,7 @@ fn row_to_user(r: &rusqlite::Row<'_>) -> rusqlite::Result<UserRow> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     store: &Store,
     username: &str,
@@ -112,7 +111,9 @@ pub fn find_by_id(store: &Store, id: UserId) -> CoreResult<Option<UserRow>> {
         let mut stmt = c
             .prepare("SELECT * FROM users WHERE id = ?1")
             .map_err(map_err)?;
-        let mut rows = stmt.query_map([id.to_string()], row_to_user).map_err(map_err)?;
+        let mut rows = stmt
+            .query_map([id.to_string()], row_to_user)
+            .map_err(map_err)?;
         match rows.next() {
             Some(row) => Ok(Some(row.map_err(map_err)?)),
             None => Ok(None),
@@ -129,18 +130,33 @@ pub fn update_preferences(
 ) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         if let Some(l) = locale {
-            c.execute("UPDATE users SET locale = ?2, updated_at = ?3 WHERE id = ?1", rusqlite::params![id.to_string(), l.tag(), ts(Utc::now())])
-                .map_err(map_err)?;
+            c.execute(
+                "UPDATE users SET locale = ?2, updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![id.to_string(), l.tag(), ts(Utc::now())],
+            )
+            .map_err(map_err)?;
         }
         if let Some(cal) = calendar {
-            let v = match cal { Calendar::Gregorian => "gregorian", Calendar::Jalali => "jalali" };
-            c.execute("UPDATE users SET calendar = ?2, updated_at = ?3 WHERE id = ?1", rusqlite::params![id.to_string(), v, ts(Utc::now())])
-                .map_err(map_err)?;
+            let v = match cal {
+                Calendar::Gregorian => "gregorian",
+                Calendar::Jalali => "jalali",
+            };
+            c.execute(
+                "UPDATE users SET calendar = ?2, updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![id.to_string(), v, ts(Utc::now())],
+            )
+            .map_err(map_err)?;
         }
         if let Some(n) = numerals {
-            let v = match n { Numerals::Western => "western", Numerals::Persian => "persian" };
-            c.execute("UPDATE users SET numerals = ?2, updated_at = ?3 WHERE id = ?1", rusqlite::params![id.to_string(), v, ts(Utc::now())])
-                .map_err(map_err)?;
+            let v = match n {
+                Numerals::Western => "western",
+                Numerals::Persian => "persian",
+            };
+            c.execute(
+                "UPDATE users SET numerals = ?2, updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![id.to_string(), v, ts(Utc::now())],
+            )
+            .map_err(map_err)?;
         }
         Ok(())
     })
@@ -159,9 +175,11 @@ pub fn set_active(store: &Store, id: UserId, active: bool) -> CoreResult<()> {
 
 pub fn list(store: &Store) -> CoreResult<Vec<UserRow>> {
     on_conn(&store.conn(), |c| {
-        let mut stmt = c.prepare("SELECT * FROM users ORDER BY username").map_err(map_err)?;
+        let mut stmt = c
+            .prepare("SELECT * FROM users ORDER BY username")
+            .map_err(map_err)?;
         let rows = stmt.query_map([], row_to_user).map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect::<CoreResult<Vec<_>>>()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
@@ -198,7 +216,14 @@ mod tests {
         assert_eq!(u.locale, Locale::Fa);
         let got = find_by_username(&store, "planner").unwrap().unwrap();
         assert_eq!(got.id, u.id);
-        update_preferences(&store, u.id, Some(Locale::En), None, Some(Numerals::Western)).unwrap();
+        update_preferences(
+            &store,
+            u.id,
+            Some(Locale::En),
+            None,
+            Some(Numerals::Western),
+        )
+        .unwrap();
         let got = find_by_id(&store, u.id).unwrap().unwrap();
         assert_eq!(got.locale, Locale::En);
         assert_eq!(got.numerals, Numerals::Western);
@@ -209,8 +234,27 @@ mod tests {
     #[test]
     fn duplicate_username_conflicts() {
         let store = Store::open_in_memory().unwrap();
-        create(&store, "admin", "h", "Admin", "admin", Locale::En, Calendar::Gregorian, Numerals::Western).unwrap();
-        let second = create(&store, "admin", "h", "Admin2", "admin", Locale::En, Calendar::Gregorian, Numerals::Western);
+        create(
+            &store,
+            "admin",
+            "h",
+            "Admin",
+            "admin",
+            Locale::En,
+            Calendar::Gregorian,
+            Numerals::Western,
+        )
+        .unwrap();
+        let second = create(
+            &store,
+            "admin",
+            "h",
+            "Admin2",
+            "admin",
+            Locale::En,
+            Calendar::Gregorian,
+            Numerals::Western,
+        );
         assert!(matches!(second, Err(CoreError::Conflict(_))));
     }
 }

@@ -150,31 +150,46 @@ impl Money {
             .minor
             .checked_add(other.minor)
             .ok_or_else(|| CoreError::Validation("money overflow".into()))?;
-        Ok(Money { minor, currency: self.currency })
+        Ok(Money {
+            minor,
+            currency: self.currency,
+        })
     }
 
     /// Checked subtraction.
     pub fn checked_sub(self, other: Money) -> CoreResult<Money> {
-        self.checked_add(Money { minor: -other.minor, currency: other.currency })
+        self.checked_add(Money {
+            minor: -other.minor,
+            currency: other.currency,
+        })
     }
 
     /// Multiply a unit amount by a quantity, rounding half away from zero.
     #[must_use]
     pub fn mul_qty(self, quantity: f64) -> Money {
         let rounded = (self.minor as f64 * quantity).round();
-        Money { minor: rounded as i64, currency: self.currency }
+        Money {
+            minor: rounded as i64,
+            currency: self.currency,
+        }
     }
 
     /// Canonical string, e.g. `1250050 IRR`, `1250.50 USD`.
     #[must_use]
     pub fn to_canonical(self) -> String {
-        let dec = self.currency.decimals() as u32;
+        let dec = self.currency.decimals();
         let scale = 10i64.pow(dec);
         let sign = if self.minor < 0 { "-" } else { "" };
         let abs = self.minor.unsigned_abs();
         match dec {
             0 => format!("{sign}{abs} {}", self.currency),
-            _ => format!("{sign}{}.{:0width$} {}", abs / scale as u64, abs % scale as u64, self.currency, width = dec as usize),
+            _ => format!(
+                "{sign}{}.{:0width$} {}",
+                abs / scale as u64,
+                abs % scale as u64,
+                self.currency,
+                width = dec as usize
+            ),
         }
     }
 }
@@ -192,7 +207,7 @@ pub struct FxEntry {
     pub base: Currency,
     /// Quote currency code, e.g. `IRR`.
     pub quote: Currency,
-    /// How many quote units one base unit buys, e.g. 100_000.0 IRR per USD.
+    /// How many quote units one base unit buys, e.g. 10_0000.0 IRR per USD.
     pub rate: f64,
     pub as_of: DateTime<Utc>,
     /// Source label (`manual`, provider name…).
@@ -246,7 +261,10 @@ impl FxTable {
         // Rates quote MAJOR units; scale by each currency's minor units.
         let major = amount.minor as f64 / 10f64.powi(amount.currency.decimals() as i32);
         let minor = (major * rate * 10f64.powi(target.decimals() as i32)).round() as i64;
-        Ok(Money { minor, currency: target })
+        Ok(Money {
+            minor,
+            currency: target,
+        })
     }
 }
 
@@ -284,7 +302,7 @@ mod tests {
         fx.insert(FxEntry {
             base: Currency::USD,
             quote: Currency::IRR,
-            rate: 100_000.0,
+            rate: 10_0000.0,
             as_of: Utc::now(),
             source: "demo".into(),
         });
@@ -295,12 +313,12 @@ mod tests {
             as_of: Utc::now(),
             source: "demo".into(),
         });
-        let usd = Money::new(100_00, Currency::USD); // 100 USD
+        let usd = Money::new(10_000, Currency::USD); // 100 USD
         let irr = fx.convert(usd, Currency::IRR).unwrap();
         assert_eq!(irr.minor, 10_000_000);
         let eur = Money::new(10_000, Currency::EUR); // 100 EUR
         let usd2 = fx.convert(eur, Currency::USD).unwrap();
-        assert_eq!(usd2.minor, 110_00); // 110 USD
+        assert_eq!(usd2.minor, 11_000); // 110 USD
         let eur2 = fx.convert(Money::new(10_000_000, Currency::IRR), Currency::EUR);
         // no IRR->EUR path: cross via USD missing (no IRR->USD) -> error
         assert!(eur2.is_err());

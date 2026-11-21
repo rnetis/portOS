@@ -219,14 +219,26 @@ impl GateTransaction {
                 (&self.expected_container, &self.ocr_container)
             {
                 if expected_no != scanned {
-                    self.steps.push(GateStep { kind, ok: false, detail: Some(format!("OCR mismatch: scanned {scanned}, expected {expected_no}")), at });
+                    self.steps.push(GateStep {
+                        kind,
+                        ok: false,
+                        detail: Some(format!(
+                            "OCR mismatch: scanned {scanned}, expected {expected_no}"
+                        )),
+                        at,
+                    });
                     self.status = GateStatus::Exception;
                     self.reject_reason = Some("ocr_mismatch".into());
                     return Ok(());
                 }
             }
         }
-        self.steps.push(GateStep { kind, ok, detail, at });
+        self.steps.push(GateStep {
+            kind,
+            ok,
+            detail,
+            at,
+        });
         if !ok {
             self.status = GateStatus::Rejected;
             self.reject_reason = Some(kind.to_string());
@@ -385,7 +397,8 @@ mod tests {
             t0,
         );
         assert!(tx.apply(GateStepKind::DriverId, true, None, t0).is_err());
-        tx.apply(GateStepKind::AppointmentCheck, true, None, t0).unwrap();
+        tx.apply(GateStepKind::AppointmentCheck, true, None, t0)
+            .unwrap();
         tx.apply(GateStepKind::DriverId, true, None, t0).unwrap();
         assert!(tx.apply(GateStepKind::SealCheck, true, None, t0).is_err());
     }
@@ -402,7 +415,8 @@ mod tests {
             "L1",
             t0,
         );
-        tx.apply(GateStepKind::AppointmentCheck, true, None, t0).unwrap();
+        tx.apply(GateStepKind::AppointmentCheck, true, None, t0)
+            .unwrap();
         tx.apply(GateStepKind::DriverId, true, None, t0).unwrap();
         tx.set_ocr(Some(ContainerNumber::parse("CSQU3054383").unwrap()));
         tx.apply(GateStepKind::OcrScan, true, None, t0).unwrap();
@@ -422,8 +436,13 @@ mod tests {
             "L1",
             t0,
         );
-        tx.apply(GateStepKind::AppointmentCheck, false, Some("no appointment".into()), t0)
-            .unwrap();
+        tx.apply(
+            GateStepKind::AppointmentCheck,
+            false,
+            Some("no appointment".into()),
+            t0,
+        )
+        .unwrap();
         assert_eq!(tx.status, GateStatus::Rejected);
         assert!(tx.apply(GateStepKind::DriverId, true, None, t0).is_err());
     }

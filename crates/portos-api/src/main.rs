@@ -5,12 +5,18 @@
 //! binds the listener and serves until SIGINT/SIGTERM with graceful
 //! shutdown (§6.5 zero-downtime upgrades pair with the readiness probe).
 
-use portos_api::{auth, config::{Config, LogFormat}, events, routes, seed, state::AppState};
+use portos_api::{
+    auth,
+    config::{Config, LogFormat},
+    events, routes, seed,
+    state::AppState,
+};
 use portos_core::{CoreError, CoreResult};
 
 fn init_tracing(cfg: &Config) {
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,portosd=debug"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,portosd=debug"));
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
@@ -40,7 +46,11 @@ fn main() {
         "seed-demo" => seed_demo(&rest),
         "hash-password" => hash_password_cmd(rest.first().map(String::as_str)),
         "version" => {
-            println!("portosd {} (event schema {})", portos_core::VERSION, portos_core::EVENT_SCHEMA_VERSION);
+            println!(
+                "portosd {} (event schema {})",
+                portos_core::VERSION,
+                portos_core::EVENT_SCHEMA_VERSION
+            );
             Ok(())
         }
         "--help" | "help" | "-h" => {
@@ -76,6 +86,11 @@ fn print_help() {
 fn serve() -> CoreResult<()> {
     let cfg = Config::from_env()?;
     init_tracing(&cfg);
+    if cfg.cors_origins.iter().any(|o| o == "*") {
+        tracing::warn!(
+            "PORTOS_CORS_ORIGINS=* allows any origin; set explicit origins in production"
+        );
+    }
     let store = open_configured_store(&cfg)?;
     let state = AppState::new(store, cfg.clone());
     // Load embedded catalogs + override directories (L-10).
@@ -109,8 +124,12 @@ async fn run_server(state: AppState) -> CoreResult<()> {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             tick.tick().await;
-            janitor_state.global_limiter.sweep(std::time::Duration::from_secs(600));
-            janitor_state.login_limiter.sweep(std::time::Duration::from_secs(3600));
+            janitor_state
+                .global_limiter
+                .sweep(std::time::Duration::from_secs(600));
+            janitor_state
+                .login_limiter
+                .sweep(std::time::Duration::from_secs(3600));
         }
     });
 
@@ -124,10 +143,15 @@ async fn run_server(state: AppState) -> CoreResult<()> {
         "PortOS server listening"
     );
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|e| CoreError::Internal(format!("serve: {e}")))?;
+    // ConnectInfo feeds per-client rate limiting; without it every request
+    // would share one bucket (§6.3).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .map_err(|e| CoreError::Internal(format!("serve: {e}")))?;
     tracing::info!("shutdown complete");
     Ok(())
 }
@@ -156,11 +180,18 @@ async fn shutdown_signal() {
 }
 
 fn init_db(rest: &[String]) -> CoreResult<()> {
-    let db_path = flag_value(rest, "--db").map(std::path::PathBuf::from).unwrap_or_else(|| {
-        Config::from_env().map(|c| c.db_path).unwrap_or_else(|_| std::path::PathBuf::from("data/portos.db"))
-    });
+    let db_path = flag_value(rest, "--db")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            Config::from_env()
+                .map(|c| c.db_path)
+                .unwrap_or_else(|_| std::path::PathBuf::from("data/portos.db"))
+        });
     let store = portos_store::Store::open(&db_path)?;
-    println!("database ready at {} (migrations applied)", db_path.display());
+    println!(
+        "database ready at {} (migrations applied)",
+        db_path.display()
+    );
     let _ = store;
     Ok(())
 }
@@ -168,7 +199,9 @@ fn init_db(rest: &[String]) -> CoreResult<()> {
 fn seed_demo(rest: &[String]) -> CoreResult<()> {
     let cfg = Config::from_env()?;
     init_tracing(&cfg);
-    let db_path = flag_value(rest, "--db").map(std::path::PathBuf::from).unwrap_or_else(|| cfg.db_path.clone());
+    let db_path = flag_value(rest, "--db")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| cfg.db_path.clone());
     let store = portos_store::Store::open(&db_path)?;
     let summary = seed::seed_demo(&store, &cfg.tenant)?;
     println!("demo data loaded into {}:\n{summary}", db_path.display());
@@ -180,7 +213,9 @@ fn seed_demo(rest: &[String]) -> CoreResult<()> {
 
 fn hash_password_cmd(pw: Option<&str>) -> CoreResult<()> {
     let Some(pw) = pw else {
-        return Err(CoreError::Validation("usage: portosd hash-password <password>".into()));
+        return Err(CoreError::Validation(
+            "usage: portosd hash-password <password>".into(),
+        ));
     };
     let hash = auth::hash_password(pw)?;
     println!("{hash}");

@@ -35,7 +35,8 @@ pub async fn create_customer(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<CustomerBody>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("billing.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("billing.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let currency = match &body.currency {
         Some(c) => Currency::parse(c).map_err(|e| problem(&state, &ctx, e))?,
         None => Currency::IRR,
@@ -50,10 +51,19 @@ pub async fn create_customer(
         active: true,
     };
     let c = customer.clone();
-    db(&state.store, move |store| portos_store::billing::create_customer(store, &c))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
-    crate::audit(&state, &auth, "billing.customer.create", "customer", &customer.id.to_string()).await;
+    db(&state.store, move |store| {
+        portos_store::billing::create_customer(store, &c)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
+    crate::audit(
+        &state,
+        &auth,
+        "billing.customer.create",
+        "customer",
+        &customer.id.to_string(),
+    )
+    .await;
     Ok(Json(serde_json::to_value(&customer).unwrap_or_default()))
 }
 
@@ -63,9 +73,11 @@ pub async fn list_customers(
     Extension(_ctx): Extension<LocaleCtx>,
     Extension(_auth): Extension<AuthContext>,
 ) -> ApiResult<serde_json::Value> {
-    let customers = db(&state.store, |store| portos_store::billing::list_customers(store))
-        .await
-        .map_err(|e| problem(&state, &_ctx, e))?;
+    let customers = db(&state.store, |store| {
+        portos_store::billing::list_customers(store)
+    })
+    .await
+    .map_err(|e| problem(&state, &_ctx, e))?;
     Ok(Json(serde_json::json!({ "customers": customers })))
 }
 
@@ -91,7 +103,8 @@ pub async fn upsert_tariff(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<TariffBody>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("tariff.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("tariff.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let basis: TariffBasis = serde_json::from_str(&format!("\"{}\"", body.basis))
         .map_err(|_| CoreError::Validation(format!("unknown basis {}", body.basis)))
         .map_err(|e| problem(&state, &ctx, e))?;
@@ -120,10 +133,19 @@ pub async fn upsert_tariff(
         active: true,
     };
     let t = tariff.clone();
-    db(&state.store, move |store| portos_store::billing::upsert_tariff(store, &t))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
-    crate::audit(&state, &auth, "billing.tariff.upsert", "tariff", &tariff.code).await;
+    db(&state.store, move |store| {
+        portos_store::billing::upsert_tariff(store, &t)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
+    crate::audit(
+        &state,
+        &auth,
+        "billing.tariff.upsert",
+        "tariff",
+        &tariff.code,
+    )
+    .await;
     Ok(Json(serde_json::to_value(&tariff).unwrap_or_default()))
 }
 
@@ -134,7 +156,10 @@ pub async fn list_tariffs(
     Extension(_auth): Extension<AuthContext>,
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<serde_json::Value> {
-    let customer = q.get("customer").and_then(|s| s.parse::<uuid::Uuid>().ok()).map(CustomerId::from_uuid);
+    let customer = q
+        .get("customer")
+        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        .map(CustomerId::from_uuid);
     let tariffs = db(&state.store, move |store| {
         portos_store::billing::list_tariffs(store, customer)
     })
@@ -157,9 +182,14 @@ pub async fn set_fx(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<FxBody>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("tariff.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("tariff.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     if body.rate <= 0.0 {
-        return Err(problem(&state, &ctx, CoreError::Validation("rate must be positive".into())));
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Validation("rate must be positive".into()),
+        ));
     }
     let entry = FxEntry {
         base: Currency::parse(&body.base).map_err(|e| problem(&state, &ctx, e))?,
@@ -169,10 +199,19 @@ pub async fn set_fx(
         source: "admin".into(),
     };
     let e = entry.clone();
-    db(&state.store, move |store| portos_store::billing::upsert_fx(store, &e))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
-    crate::audit(&state, &auth, "billing.fx.update", "fx_rate", &format!("{}/{}", body.base, body.quote)).await;
+    db(&state.store, move |store| {
+        portos_store::billing::upsert_fx(store, &e)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
+    crate::audit(
+        &state,
+        &auth,
+        "billing.fx.update",
+        "fx_rate",
+        &format!("{}/{}", body.base, body.quote),
+    )
+    .await;
     let msg = state.t(
         ctx.locale,
         "admin.fx.updated",
@@ -206,7 +245,8 @@ pub async fn generate_invoice(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<GenerateInvoice>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("billing.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("billing.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let customer_id = body
         .customer_id
         .parse::<uuid::Uuid>()
@@ -228,33 +268,44 @@ pub async fn generate_invoice(
     })
     .await
     .map_err(|e| problem(&state, &ctx, e))?;
-    let fx = db(&state.store, |store| portos_store::billing::load_fx_table(store))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let fx = db(&state.store, |store| {
+        portos_store::billing::load_fx_table(store)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
 
     let mut draft = InvoiceDraft::new(customer_id, currency);
 
     if let Some(container_text) = &body.container {
         let cn = ContainerNumber::parse(container_text).map_err(|e| problem(&state, &ctx, e))?;
         let cn_lookup = cn.clone();
-        let container = db(&state.store, move |store| portos_store::yard::get_container(store, &cn_lookup))
-            .await
-            .map_err(|e| problem(&state, &ctx, e))?;
+        let container = db(&state.store, move |store| {
+            portos_store::yard::get_container(store, &cn_lookup)
+        })
+        .await
+        .map_err(|e| problem(&state, &ctx, e))?;
         let gate_in = gate_in_time(cn.clone(), &state).await?;
         // Storage (per-day) — free days from the tariff.
         let storage = find_tariff(&tariffs, "STORAGE-IMP")
             .ok_or_else(|| CoreError::Validation("tariff STORAGE-IMP not configured".into()))
             .map_err(|e| problem(&state, &ctx, e))?;
-        let charge = billing::compute_day_charge(&convert_tariff(&storage, currency, &fx)?, gate_in, None, now)
-            .map_err(|e| problem(&state, &ctx, e))?;
+        let charge = billing::compute_day_charge(
+            &convert_tariff(storage, currency, &fx)?,
+            gate_in,
+            None,
+            now,
+        )
+        .map_err(|e| problem(&state, &ctx, e))?;
         draft.push(billing_line(
-            &storage,
+            storage,
             "billing.storage.line",
             &[
                 ("days", charge.days_billed.to_string()),
                 ("free", charge.free_days.to_string()),
             ],
-            ChargeRef::Container { container: cn.clone() },
+            ChargeRef::Container {
+                container: cn.clone(),
+            },
             charge.days_billed as f64,
             charge.amount,
             currency,
@@ -264,11 +315,11 @@ pub async fn generate_invoice(
         // Reefer plug days (F-10/F-28) when the box is a reefer.
         if container.kind().needs_plug() {
             if let Some(plug) = find_tariff(&tariffs, "REEFER-PLUG") {
-                let plug_converted = convert_tariff(&plug, currency, &fx)?;
+                let plug_converted = convert_tariff(plug, currency, &fx)?;
                 let charge = billing::compute_day_charge(&plug_converted, gate_in, None, now)
                     .map_err(|e| problem(&state, &ctx, e))?;
                 draft.push(billing_line(
-                    &plug,
+                    plug,
                     "billing.reefer_plug.line",
                     &[("days", charge.days_billed.to_string())],
                     ChargeRef::Container { container: cn },
@@ -294,7 +345,7 @@ pub async fn generate_invoice(
         .map_err(|e| problem(&state, &ctx, e))?;
         if let Some(move_tariff) = find_tariff(&tariffs, "MOVE-DIS") {
             let line = billing::compute_move_charge(
-                &convert_tariff(&move_tariff, currency, &fx)?,
+                &convert_tariff(move_tariff, currency, &fx)?,
                 call_moves,
                 ChargeRef::VesselCall { call: cid },
             )
@@ -305,30 +356,48 @@ pub async fn generate_invoice(
             draft.push(line).map_err(|e| problem(&state, &ctx, e))?;
         }
         if let Some(call_fee) = find_tariff(&tariffs, "CALL-FEE") {
-            let fee = convert_tariff(&call_fee, currency, &fx)?;
+            let fee = convert_tariff(call_fee, currency, &fx)?;
             let amount = Money::new(fee.unit_minor, currency);
-            draft.push(billing::ChargeLine {
-                tariff_code: call_fee.code.clone(),
-                description_en: call_fee.name_en.clone(),
-                description_fa: call_fee.name_fa.clone(),
-                charge_ref: ChargeRef::VesselCall { call: cid },
-                quantity: 1.0,
-                unit_minor: fee.unit_minor,
-                amount,
-                tax_rate: fee.tax_rate,
-                tax_minor: (amount.minor as f64 * fee.tax_rate).round() as i64,
-            })
-            .map_err(|e| problem(&state, &ctx, e))?;
+            draft
+                .push(billing::ChargeLine {
+                    tariff_code: call_fee.code.clone(),
+                    description_en: call_fee.name_en.clone(),
+                    description_fa: call_fee.name_fa.clone(),
+                    charge_ref: ChargeRef::VesselCall { call: cid },
+                    quantity: 1.0,
+                    unit_minor: fee.unit_minor,
+                    amount,
+                    tax_rate: fee.tax_rate,
+                    tax_minor: (amount.minor as f64 * fee.tax_rate).round() as i64,
+                })
+                .map_err(|e| problem(&state, &ctx, e))?;
         }
     }
 
     if draft.lines.is_empty() {
-        return Err(problem(&state, &ctx, CoreError::Validation("nothing to invoice: provide container or vessel_call_id".into())));
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Validation("nothing to invoice: provide container or vessel_call_id".into()),
+        ));
+    }
+    // Within the free period every computed line is zero — issuing a zero
+    // invoice would be noise in receivables, so report it explicitly.
+    if draft.lines.iter().all(|l| l.amount.minor == 0) {
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Validation(
+                "nothing to charge: all computed charges are zero (inside the free period)".into(),
+            ),
+        ));
     }
 
-    let seq = db(&state.store, |store| portos_store::billing::next_invoice_seq(store))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let seq = db(&state.store, |store| {
+        portos_store::billing::next_invoice_seq(store)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     let number = format!("INV-{}-{:06}", now.format("%Y"), seq + 1);
     let lines = draft.lines.clone();
     let lines_for_store = lines.clone();
@@ -358,21 +427,30 @@ pub async fn generate_invoice(
     let msg = state.t(
         ctx.locale,
         "billing.invoice.issued",
-        &Args::new().arg("number", &number).arg("total", &total_display),
+        &Args::new()
+            .arg("number", &number)
+            .arg("total", &total_display),
     );
-    Ok(Json(serde_json::json!({ "invoice": invoice, "lines": lines, "message": msg })))
+    Ok(Json(
+        serde_json::json!({ "invoice": invoice, "lines": lines, "message": msg }),
+    ))
 }
 
 /// Gate-in timestamp of a container — storage starts at gate-in (F-28).
-async fn gate_in_time(cn: ContainerNumber, state: &AppState) -> CoreResult<chrono::DateTime<chrono::Utc>> {
+async fn gate_in_time(
+    cn: ContainerNumber,
+    state: &AppState,
+) -> CoreResult<chrono::DateTime<chrono::Utc>> {
     let lookup = cn.clone();
-    db(&state.store, move |store| portos_store::yard::gate_in_at(store, &lookup))
-        .await?
-        .ok_or_else(|| {
-            CoreError::Validation(format!(
-                "container {cn} has no gate-in time; storage starts at gate-in"
-            ))
-        })
+    db(&state.store, move |store| {
+        portos_store::yard::gate_in_at(store, &lookup)
+    })
+    .await?
+    .ok_or_else(|| {
+        CoreError::Validation(format!(
+            "container {cn} has no gate-in time; storage starts at gate-in"
+        ))
+    })
 }
 
 fn find_tariff<'a>(tariffs: &'a [Tariff], code: &str) -> Option<&'a Tariff> {
@@ -380,16 +458,25 @@ fn find_tariff<'a>(tariffs: &'a [Tariff], code: &str) -> Option<&'a Tariff> {
 }
 
 /// Convert a tariff into the invoice currency via the FX table (L-9).
-fn convert_tariff(t: &Tariff, currency: Currency, fx: &portos_core::money::FxTable) -> CoreResult<Tariff> {
+fn convert_tariff(
+    t: &Tariff,
+    currency: Currency,
+    fx: &portos_core::money::FxTable,
+) -> CoreResult<Tariff> {
     if t.currency == currency {
         return Ok(t.clone());
     }
     let converted = fx.convert(Money::new(t.unit_minor, t.currency), currency)?;
-    Ok(Tariff { unit_minor: converted.minor, currency, ..t.clone() })
+    Ok(Tariff {
+        unit_minor: converted.minor,
+        currency,
+        ..t.clone()
+    })
 }
 
 /// Build a localized charge line from a day charge (bilingual line text,
 /// L-8) and convert the amount into the invoice currency.
+#[allow(clippy::too_many_arguments)]
 fn billing_line(
     tariff: &Tariff,
     key: &str,
@@ -415,7 +502,11 @@ fn billing_line(
         description_fa: format_args_fa(key, args),
         charge_ref,
         quantity,
-        unit_minor: if quantity > 0.0 { (amount.minor as f64 / quantity).round() as i64 } else { amount.minor },
+        unit_minor: if quantity > 0.0 {
+            (amount.minor as f64 / quantity).round() as i64
+        } else {
+            amount.minor
+        },
         amount,
         tax_rate: tariff.tax_rate,
         tax_minor: (amount.minor as f64 * tariff.tax_rate).round() as i64,
@@ -424,17 +515,32 @@ fn billing_line(
 
 fn format_args_en(key: &str, args: &[(&str, String)]) -> String {
     let templates = HashMap::from([
-        ("billing.storage.line", "Yard storage ({days} day(s), {free} free)"),
-        ("billing.demurrage.line", "Demurrage — container {container} ({days} day(s))"),
-        ("billing.reefer_plug.line", "Reefer plug service ({days} day(s))"),
+        (
+            "billing.storage.line",
+            "Yard storage ({days} day(s), {free} free)",
+        ),
+        (
+            "billing.demurrage.line",
+            "Demurrage — container {container} ({days} day(s))",
+        ),
+        (
+            "billing.reefer_plug.line",
+            "Reefer plug service ({days} day(s))",
+        ),
     ]);
     interpolate(templates.get(key).copied().unwrap_or(key), args)
 }
 
 fn format_args_fa(key: &str, args: &[(&str, String)]) -> String {
     let templates = HashMap::from([
-        ("billing.storage.line", "انبارش محوطه ({days} روز، {free} روز رایگان)"),
-        ("billing.demurrage.line", "دِمِرِج — کانتینر {container} ({days} روز)"),
+        (
+            "billing.storage.line",
+            "انبارش محوطه ({days} روز، {free} روز رایگان)",
+        ),
+        (
+            "billing.demurrage.line",
+            "دِمِرِج — کانتینر {container} ({days} روز)",
+        ),
         ("billing.reefer_plug.line", "خدمات پریز یخچالی ({days} روز)"),
     ]);
     interpolate(templates.get(key).copied().unwrap_or(key), args)
@@ -509,13 +615,24 @@ pub async fn record_payment(
     Path(number): Path<String>,
     Json(body): Json<PaymentBody>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("billing.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("billing.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     if body.amount_minor <= 0 {
-        return Err(problem(&state, &ctx, CoreError::Validation("amount must be positive".into())));
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Validation("amount must be positive".into()),
+        ));
     }
     let num = number.clone();
     let paid = db(&state.store, move |store| {
-        portos_store::billing::record_payment(store, &num, body.amount_minor, &body.method, body.reference.as_deref())
+        portos_store::billing::record_payment(
+            store,
+            &num,
+            body.amount_minor,
+            &body.method,
+            body.reference.as_deref(),
+        )
     })
     .await
     .map_err(|e| problem(&state, &ctx, e))?;
@@ -535,7 +652,9 @@ pub async fn record_payment(
     let msg = state.t(
         ctx.locale,
         "billing.invoice.paid",
-        &Args::new().arg("amount", &amount_display).arg("number", &number),
+        &Args::new()
+            .arg("amount", &amount_display)
+            .arg("number", &number),
     );
     Ok(Json(serde_json::json!({ "invoice": paid, "message": msg })))
 }

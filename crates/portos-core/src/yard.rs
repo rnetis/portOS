@@ -143,7 +143,12 @@ pub struct AssignmentPolicy {
 
 impl Default for AssignmentPolicy {
     fn default() -> Self {
-        Self { balance: 0.40, low_stack: 0.30, proximity: 0.20, grouping: 0.10 }
+        Self {
+            balance: 0.40,
+            low_stack: 0.30,
+            proximity: 0.20,
+            grouping: 0.10,
+        }
     }
 }
 
@@ -179,7 +184,10 @@ pub fn imdg_group(class: &str) -> &'static str {
 /// the Dangerous block).
 #[must_use]
 pub fn needs_isolation_row(class: &str) -> bool {
-    matches!(imdg_group(class), "explosives" | "toxic-gas" | "radioactive" | "infectious")
+    matches!(
+        imdg_group(class),
+        "explosives" | "toxic-gas" | "radioactive" | "infectious"
+    )
 }
 
 fn eligible_block_type(c: &Container) -> BlockType {
@@ -213,8 +221,10 @@ pub fn suggest_slot(
     next_leg: NextLeg,
     policy: &AssignmentPolicy,
 ) -> CoreResult<SlotSuggestion> {
+    // Score, block id, block code, bay, row, tier, explanation.
+    type BestSlot = (f64, BlockId, String, u16, u16, u16, Vec<String>);
     let required = eligible_block_type(container);
-    let mut best: Option<(f64, BlockId, String, u16, u16, u16, Vec<String>)> = None;
+    let mut best: Option<BestSlot> = None;
     let mut blocked_reasons: Vec<String> = Vec::new();
 
     for snap in blocks {
@@ -237,8 +247,7 @@ pub fn suggest_slot(
                 continue;
             }
             if container.reefer_setpoint_c.is_none() {
-                blocked_reasons
-                    .push("reefer without setpoint cannot be planned".to_string());
+                blocked_reasons.push("reefer without setpoint cannot be planned".to_string());
                 continue;
             }
         }
@@ -297,14 +306,16 @@ pub fn suggest_slot(
         let height_score = 1.0 - f64::from(tier) / f64::from(meta.tiers.max(1));
         let proximity_score = match next_leg {
             NextLeg::Vessel => 1.0 - f64::from(meta.distance_to_quay_m) / 2000.0,
-            NextLeg::Gate | NextLeg::Rail => {
-                1.0 - f64::from(meta.distance_to_gate_m) / 2000.0
-            }
+            NextLeg::Gate | NextLeg::Rail => 1.0 - f64::from(meta.distance_to_gate_m) / 2000.0,
             NextLeg::Unknown => 0.5,
         }
         .clamp(0.0, 1.0);
         let grouping_score = if container.imdg_class.is_some() {
-            if snap.imdg_classes_present.iter().any(|c| Some(c) == container.imdg_class.as_ref()) {
+            if snap
+                .imdg_classes_present
+                .iter()
+                .any(|c| Some(c) == container.imdg_class.as_ref())
+            {
                 1.0
             } else {
                 0.3
@@ -318,7 +329,10 @@ pub fn suggest_slot(
             + policy.grouping * grouping_score;
 
         let mut reasons = Vec::new();
-        reasons.push(format!("block type {} matches container profile", meta.block_type));
+        reasons.push(format!(
+            "block type {} matches container profile",
+            meta.block_type
+        ));
         reasons.push(format!(
             "column ({bay},{row}) stack height {tier} of {} tiers → low reshuffle risk",
             meta.tiers
@@ -347,8 +361,19 @@ pub fn suggest_slot(
             ));
         }
 
-        if best.as_ref().is_none_or(|(s, _, _, _, _, _, _)| score > *s) {
-            best = Some((score, snap.block, meta.code.clone(), bay, row, tier, reasons));
+        if best
+            .as_ref()
+            .map_or(true, |(s, _, _, _, _, _, _)| score > *s)
+        {
+            best = Some((
+                score,
+                snap.block,
+                meta.code.clone(),
+                bay,
+                row,
+                tier,
+                reasons,
+            ));
         }
     }
 
@@ -387,7 +412,14 @@ mod tests {
     use crate::container::{ContainerNumber, IsoSizeType};
     use crate::ids::BlockId;
 
-    fn block(id: &str, code: &str, btype: BlockType, bays: u16, rows: u16, tiers: u16) -> YardBlock {
+    fn block(
+        _id: &str,
+        code: &str,
+        btype: BlockType,
+        bays: u16,
+        rows: u16,
+        tiers: u16,
+    ) -> YardBlock {
         YardBlock {
             id: BlockId::generate(),
             code: code.into(),
@@ -443,8 +475,14 @@ mod tests {
         let snap_refs: Vec<&BlockSnapshot> = snaps.iter().collect();
         let map = meta_map(&list);
         let c = container(None, false, false);
-        let s = suggest_slot(&c, &snap_refs, &map, NextLeg::Vessel, &AssignmentPolicy::default())
-            .unwrap();
+        let s = suggest_slot(
+            &c,
+            &snap_refs,
+            &map,
+            NextLeg::Vessel,
+            &AssignmentPolicy::default(),
+        )
+        .unwrap();
         assert_eq!(s.block_code, "A1");
         assert!(s.reasons.iter().any(|r| r.contains("general")));
     }
@@ -467,10 +505,24 @@ mod tests {
         };
         let snaps: Vec<&BlockSnapshot> = vec![&snap];
         let c = container(None, true, false);
-        assert!(suggest_slot(&c, &snaps, &map, NextLeg::Gate, &AssignmentPolicy::default()).is_err());
+        assert!(suggest_slot(
+            &c,
+            &snaps,
+            &map,
+            NextLeg::Gate,
+            &AssignmentPolicy::default()
+        )
+        .is_err());
         snap.free_plugs = 10;
         let snaps: Vec<&BlockSnapshot> = vec![&snap];
-        assert!(suggest_slot(&c, &snaps, &map, NextLeg::Gate, &AssignmentPolicy::default()).is_ok());
+        assert!(suggest_slot(
+            &c,
+            &snaps,
+            &map,
+            NextLeg::Gate,
+            &AssignmentPolicy::default()
+        )
+        .is_ok());
     }
 
     #[test]
@@ -491,10 +543,20 @@ mod tests {
         };
         let snaps: Vec<&BlockSnapshot> = vec![&snap];
         let c = container(Some("1.4"), false, false); // explosives → isolated
-        let s = suggest_slot(&c, &snaps, &map, NextLeg::Unknown, &AssignmentPolicy::default())
-            .unwrap();
+        let s = suggest_slot(
+            &c,
+            &snaps,
+            &map,
+            NextLeg::Unknown,
+            &AssignmentPolicy::default(),
+        )
+        .unwrap();
         let slot = s.slot.unwrap();
-        assert!(slot.row >= 3, "isolated class must be placed in far rows, got {}", slot.row);
+        assert!(
+            slot.row >= 3,
+            "isolated class must be placed in far rows, got {}",
+            slot.row
+        );
     }
 
     #[test]
@@ -517,8 +579,14 @@ mod tests {
             .collect();
         let snap_refs: Vec<&BlockSnapshot> = snaps.iter().collect();
         let c = container(None, false, true);
-        let s = suggest_slot(&c, &snap_refs, &map, NextLeg::Gate, &AssignmentPolicy::default())
-            .unwrap();
+        let s = suggest_slot(
+            &c,
+            &snap_refs,
+            &map,
+            NextLeg::Gate,
+            &AssignmentPolicy::default(),
+        )
+        .unwrap();
         assert_eq!(s.block_code, "OOG1");
         assert_eq!(s.slot.unwrap().tier, 0, "over-gauge goes on ground tier");
     }

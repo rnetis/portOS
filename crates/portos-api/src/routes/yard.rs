@@ -4,7 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::Extension;
 use axum::Json;
 use portos_core::container::{
-    Container, ContainerNumber, ContainerState, CustomsStatus, Hold, HoldKind, IsoSizeType,
+    Container, ContainerNumber, ContainerState, Hold, HoldKind, IsoSizeType,
 };
 use portos_core::ids::BlockId;
 use portos_core::yard::{self, AssignmentPolicy, BlockType, NextLeg, YardBlock};
@@ -42,7 +42,8 @@ pub async fn create_block(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<CreateBlock>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("yard.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("yard.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let block_type: BlockType = serde_json::from_str(&format!("\"{}\"", body.block_type))
         .map_err(|_| CoreError::Validation(format!("unknown block type {}", body.block_type)))
         .map_err(|e| problem(&state, &ctx, e))?;
@@ -66,7 +67,14 @@ pub async fn create_block(
     })
     .await
     .map_err(|e| problem(&state, &ctx, e))?;
-    crate::audit(&state, &auth, "yard.block.create", "yard_block", &block.code).await;
+    crate::audit(
+        &state,
+        &auth,
+        "yard.block.create",
+        "yard_block",
+        &block.code,
+    )
+    .await;
     Ok(Json(serde_json::json!({
         "block": block,
         "slots_created": slots,
@@ -79,7 +87,7 @@ pub async fn list_blocks(
     Extension(_ctx): Extension<LocaleCtx>,
     Extension(_auth): Extension<AuthContext>,
 ) -> ApiResult<serde_json::Value> {
-    let blocks = db(&state.store, |store| portos_store::yard::list_blocks(store))
+    let blocks = db(&state.store, portos_store::yard::list_blocks)
         .await
         .map_err(|e| problem(&state, &_ctx, e))?;
     Ok(Json(serde_json::json!({ "blocks": blocks })))
@@ -97,9 +105,11 @@ pub async fn block_snapshot(
         .map(BlockId::from_uuid)
         .map_err(|_| CoreError::Validation(format!("invalid block id {id:?}")))
         .map_err(|e| problem(&state, &ctx, e))?;
-    let block = db(&state.store, move |store| portos_store::yard::get_block(store, bid))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let block = db(&state.store, move |store| {
+        portos_store::yard::get_block(store, bid)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     let snap = db(&state.store, move |store| {
         portos_store::yard::block_snapshot(store, &block)
     })
@@ -129,13 +139,23 @@ pub async fn upsert_container(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<UpsertContainer>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("yard.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("yard.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let container = build_container(body).map_err(|e| problem(&state, &ctx, e))?;
     let c = container.clone();
-    db(&state.store, move |store| portos_store::yard::upsert_container(store, &c))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
-    crate::audit(&state, &auth, "yard.container.upsert", "container", container.number.as_str()).await;
+    db(&state.store, move |store| {
+        portos_store::yard::upsert_container(store, &c)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
+    crate::audit(
+        &state,
+        &auth,
+        "yard.container.upsert",
+        "container",
+        container.number.as_str(),
+    )
+    .await;
     Ok(Json(serde_json::to_value(&container).unwrap_or_default()))
 }
 
@@ -161,10 +181,14 @@ pub async fn list_containers(
     Extension(_auth): Extension<AuthContext>,
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<serde_json::Value> {
-    let filter = q.get("state").and_then(|s| {
-        serde_json::from_str::<ContainerState>(&format!("\"{s}\"")).ok()
-    });
-    let limit: u32 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100).min(1000);
+    let filter = q
+        .get("state")
+        .and_then(|s| serde_json::from_str::<ContainerState>(&format!("\"{s}\"")).ok());
+    let limit: u32 = q
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(1000);
     let containers = db(&state.store, move |store| {
         portos_store::yard::list_containers(store, filter, limit)
     })
@@ -182,9 +206,11 @@ pub async fn get_container(
 ) -> ApiResult<serde_json::Value> {
     let cn = ContainerNumber::parse(&number).map_err(|e| problem(&state, &ctx, e))?;
     let cn_a = cn.clone();
-    let container = db(&state.store, move |store| portos_store::yard::get_container(store, &cn_a))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let container = db(&state.store, move |store| {
+        portos_store::yard::get_container(store, &cn_a)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     let slot = db(&state.store, move |store| {
         portos_store::yard::find_slot_of_container(store, &cn)
     })
@@ -214,35 +240,46 @@ pub async fn place_container(
     Path(number): Path<String>,
     Json(body): Json<PlaceRequest>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("yard.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("yard.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let cn = ContainerNumber::parse(&number).map_err(|e| problem(&state, &ctx, e))?;
     let cn_a = cn.clone();
-    let container = db(&state.store, move |store| portos_store::yard::get_container(store, &cn_a))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let container = db(&state.store, move |store| {
+        portos_store::yard::get_container(store, &cn_a)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
 
     // Refuse to place containers with active holds (F-11).
     let cn_b = cn.clone();
-    let holds = db(&state.store, move |store| portos_store::yard::active_holds(store, &cn_b))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let holds = db(&state.store, move |store| {
+        portos_store::yard::active_holds(store, &cn_b)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     if !holds.is_empty() {
-        return Err(problem(&state, &ctx, CoreError::Conflict(format!(
-            "container {} has {} active hold(s)",
-            cn,
-            holds.len()
-        ))));
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Conflict(format!(
+                "container {} has {} active hold(s)",
+                cn,
+                holds.len()
+            )),
+        ));
     }
 
-    let blocks = db(&state.store, |store| portos_store::yard::list_blocks(store))
+    let blocks = db(&state.store, portos_store::yard::list_blocks)
         .await
         .map_err(|e| problem(&state, &ctx, e))?;
     let mut snapshots = Vec::new();
     for b in &blocks {
         let block = b.clone();
-        let snap = db(&state.store, move |store| portos_store::yard::block_snapshot(store, &block))
-            .await
-            .map_err(|e| problem(&state, &ctx, e))?;
+        let snap = db(&state.store, move |store| {
+            portos_store::yard::block_snapshot(store, &block)
+        })
+        .await
+        .map_err(|e| problem(&state, &ctx, e))?;
         snapshots.push(snap);
     }
     let meta: HashMap<BlockId, &YardBlock> = blocks.iter().map(|b| (b.id, b)).collect();
@@ -267,12 +304,7 @@ pub async fn place_container(
     let cn_in_tx = cn.clone();
     let placed = db(&state.store, move |store| {
         let slot_id = portos_store::yard::occupy_slot(
-            store,
-            slot.block,
-            slot.bay,
-            slot.row,
-            slot.tier,
-            &cn_in_tx,
+            store, slot.block, slot.bay, slot.row, slot.tier, &cn_in_tx,
         )?;
         portos_store::yard::record_yard_move(
             store,
@@ -297,7 +329,14 @@ pub async fn place_container(
         },
     );
     let cn_display = cn.clone();
-    crate::audit(&state, &auth, "yard.container.place", "container", cn_display.as_str()).await;
+    crate::audit(
+        &state,
+        &auth,
+        "yard.container.place",
+        "container",
+        cn_display.as_str(),
+    )
+    .await;
     let msg = state.t(
         ctx.locale,
         "yard.container.placed",
@@ -330,7 +369,8 @@ pub async fn place_hold(
     Path(number): Path<String>,
     Json(body): Json<HoldRequest>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("yard.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("yard.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let cn = ContainerNumber::parse(&number).map_err(|e| problem(&state, &ctx, e))?;
     let kind: HoldKind = serde_json::from_str(&format!("\"{}\"", body.kind))
         .map_err(|_| CoreError::Validation(format!("unknown hold kind {}", body.kind)))
@@ -348,9 +388,11 @@ pub async fn place_hold(
     let h = hold.clone();
     let cn_hold = cn.clone();
     let _ = &cn_hold;
-    db(&state.store, move |store| portos_store::yard::place_hold(store, &h))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    db(&state.store, move |store| {
+        portos_store::yard::place_hold(store, &h)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     crate::events::publish(
         &state,
         portos_core::events::DomainEventKind::HoldPlaced {
@@ -363,7 +405,9 @@ pub async fn place_hold(
     let msg = state.t(
         ctx.locale,
         "yard.hold.placed",
-        &Args::new().arg("container", cn.as_str()).arg("reason", &hold.reason),
+        &Args::new()
+            .arg("container", cn.as_str())
+            .arg("reason", &hold.reason),
     );
     Ok(Json(serde_json::json!({ "hold": hold, "message": msg })))
 }
@@ -375,7 +419,8 @@ pub async fn release_hold(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("yard.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("yard.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let hid = id
         .parse::<uuid::Uuid>()
         .map(portos_core::ids::HoldId::from_uuid)
@@ -387,11 +432,25 @@ pub async fn release_hold(
     })
     .await
     .map_err(|e| problem(&state, &ctx, e))?;
-    if !released {
-        return Err(problem(&state, &ctx, CoreError::NotFound(format!("open hold {id}"))));
-    }
+    let Some(container) = released else {
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::NotFound(format!("open hold {id}")),
+        ));
+    };
+    crate::events::publish(
+        &state,
+        portos_core::events::DomainEventKind::HoldReleased {
+            container: container.clone(),
+        },
+    );
     crate::audit(&state, &auth, "yard.hold.release", "hold", &id).await;
-    Ok(Json(serde_json::json!({ "released": true, "hold": id })))
+    Ok(Json(serde_json::json!({
+        "released": true,
+        "hold": id,
+        "container": container.as_str(),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -410,12 +469,15 @@ pub async fn reefer_reading(
     Path(number): Path<String>,
     Json(body): Json<ReeferReading>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("yard.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("yard.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let cn = ContainerNumber::parse(&number).map_err(|e| problem(&state, &ctx, e))?;
     let cn_a = cn.clone();
-    let container = db(&state.store, move |store| portos_store::yard::get_container(store, &cn_a))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let container = db(&state.store, move |store| {
+        portos_store::yard::get_container(store, &cn_a)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     let setpoint = container
         .reefer_setpoint_c
         .ok_or_else(|| CoreError::Validation("container is not a reefer".into()))
@@ -456,7 +518,14 @@ pub async fn reefer_reading(
             },
         );
         let cn_display = cn.clone();
-        crate::audit(&state, &auth, "yard.reefer.alarm", "container", cn_display.as_str()).await;
+        crate::audit(
+            &state,
+            &auth,
+            "yard.reefer.alarm",
+            "container",
+            cn_display.as_str(),
+        )
+        .await;
         let msg = state.t(
             ctx.locale,
             "yard.reefer.alarm",

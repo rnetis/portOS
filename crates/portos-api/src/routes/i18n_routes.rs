@@ -18,7 +18,10 @@ pub async fn catalog(
         .get("locale")
         .and_then(|v| portos_i18n::Locale::parse(v))
         .unwrap_or(state.config.default_locale);
-    let catalogs = state.catalogs.read().map_err(|_| portos_core::CoreError::Internal("catalog lock".into()))?;
+    let catalogs = state
+        .catalogs
+        .read()
+        .map_err(|_| portos_core::CoreError::Internal("catalog lock".into()))?;
     let cat = catalogs.catalog(locale);
     let mut entries = serde_json::Map::new();
     for key in cat.keys() {

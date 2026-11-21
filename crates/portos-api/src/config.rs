@@ -39,6 +39,8 @@ pub struct Config {
     pub webhook_timeout_secs: u64,
     /// Refuse to boot with the default dev JWT secret.
     pub require_secret: bool,
+    /// Trust `X-Forwarded-For` for client identity (reverse-proxy deploys).
+    pub trust_proxy: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,14 +50,17 @@ pub enum LogFormat {
 }
 
 fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| default.to_string())
+    std::env::var(key)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| default.to_string())
 }
 
 impl Config {
     /// Load from environment with defaults.
     pub fn from_env() -> CoreResult<Config> {
-        let default_locale = portos_i18n::Locale::parse(&env_or("PORTOS_DEFAULT_LOCALE", "en"))
-            .unwrap_or_default();
+        let default_locale =
+            portos_i18n::Locale::parse(&env_or("PORTOS_DEFAULT_LOCALE", "en")).unwrap_or_default();
         let cors_origins = env_or("PORTOS_CORS_ORIGINS", "*")
             .split(',')
             .map(|s| s.trim().to_string())
@@ -74,15 +79,19 @@ impl Config {
             })?,
             tenant: env_or("PORTOS_TENANT", "IRBND-CT1"),
             cors_origins,
-            rate_limit_rps: env_or("PORTOS_RATE_LIMIT_RPS", "100").parse().map_err(|_| {
-                CoreError::Validation("PORTOS_RATE_LIMIT_RPS must be a number".into())
-            })?,
-            login_rate_per_min: env_or("PORTOS_LOGIN_RATE_PER_MIN", "10").parse().map_err(|_| {
-                CoreError::Validation("PORTOS_LOGIN_RATE_PER_MIN must be an integer".into())
-            })?,
-            body_limit_bytes: env_or("PORTOS_BODY_LIMIT_BYTES", "2097152").parse().map_err(|_| {
-                CoreError::Validation("PORTOS_BODY_LIMIT_BYTES must be an integer".into())
-            })?,
+            rate_limit_rps: env_or("PORTOS_RATE_LIMIT_RPS", "100")
+                .parse()
+                .map_err(|_| {
+                    CoreError::Validation("PORTOS_RATE_LIMIT_RPS must be a number".into())
+                })?,
+            login_rate_per_min: env_or("PORTOS_LOGIN_RATE_PER_MIN", "10").parse().map_err(
+                |_| CoreError::Validation("PORTOS_LOGIN_RATE_PER_MIN must be an integer".into()),
+            )?,
+            body_limit_bytes: env_or("PORTOS_BODY_LIMIT_BYTES", "2097152")
+                .parse()
+                .map_err(|_| {
+                    CoreError::Validation("PORTOS_BODY_LIMIT_BYTES must be an integer".into())
+                })?,
             timeout_secs: env_or("PORTOS_TIMEOUT_SECS", "30").parse().map_err(|_| {
                 CoreError::Validation("PORTOS_TIMEOUT_SECS must be an integer".into())
             })?,
@@ -97,14 +106,29 @@ impl Config {
                 "pretty" => LogFormat::Pretty,
                 _ => LogFormat::Json,
             },
-            webhook_timeout_secs: env_or("PORTOS_WEBHOOK_TIMEOUT_SECS", "10").parse().map_err(|_| {
-                CoreError::Validation("PORTOS_WEBHOOK_TIMEOUT_SECS must be an integer".into())
-            })?,
+            webhook_timeout_secs: env_or("PORTOS_WEBHOOK_TIMEOUT_SECS", "10")
+                .parse()
+                .map_err(|_| {
+                    CoreError::Validation("PORTOS_WEBHOOK_TIMEOUT_SECS must be an integer".into())
+                })?,
             require_secret: env_or("PORTOS_REQUIRE_SECRET", "0") == "1",
+            trust_proxy: env_or("PORTOS_TRUST_PROXY", "0") == "1",
         };
-        if cfg.require_secret && cfg.jwt_secret == "dev-only-secret-change-me-in-production-0f3a" {
-            return Err(CoreError::Internal(
-                "PORTOS_JWT_SECRET must be set when PORTOS_REQUIRE_SECRET=1".into(),
+        if cfg.require_secret {
+            if cfg.jwt_secret == "dev-only-secret-change-me-in-production-0f3a" {
+                return Err(CoreError::Internal(
+                    "PORTOS_JWT_SECRET must be set when PORTOS_REQUIRE_SECRET=1".into(),
+                ));
+            }
+            if cfg.jwt_secret.len() < 32 {
+                return Err(CoreError::Internal(
+                    "PORTOS_JWT_SECRET must be at least 32 characters in production".into(),
+                ));
+            }
+        }
+        if cfg.jwt_ttl_hours <= 0 {
+            return Err(CoreError::Validation(
+                "PORTOS_JWT_TTL_HOURS must be positive".into(),
             ));
         }
         Ok(cfg)
@@ -126,6 +150,8 @@ impl Config {
             "i18n_extra_dirs": self.i18n_extra_dirs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             "default_locale": self.default_locale.tag(),
             "webhook_timeout_secs": self.webhook_timeout_secs,
+            "trust_proxy": self.trust_proxy,
+            "require_secret": self.require_secret,
             "jwt_secret": "***redacted***",
         })
     }

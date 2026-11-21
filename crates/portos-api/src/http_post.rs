@@ -3,7 +3,12 @@
 //! receivers can verify authenticity (PRD I-1, §6.3).
 
 /// POST JSON with signature headers; returns the HTTP status.
-pub fn post_json(url: &str, payload: &str, signature: &str, timeout_secs: u64) -> Result<u16, String> {
+pub fn post_json(
+    url: &str,
+    payload: &str,
+    signature: &str,
+    timeout_secs: u64,
+) -> Result<u16, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .build();

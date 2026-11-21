@@ -29,8 +29,8 @@ pub async fn audit(
     let mut record = portos_core::audit::AuditRecord::system(action, entity_type, entity_id);
     record.actor = actor.username.clone();
     let store = state.store.clone();
-    let _ =
-        tokio::task::spawn_blocking(move || portos_store::misc::append_audit(&store, &record)).await;
+    let _ = tokio::task::spawn_blocking(move || portos_store::misc::append_audit(&store, &record))
+        .await;
 }
 
 /// Convenience for tests/tools: build a test-ready state over a temp DB.
