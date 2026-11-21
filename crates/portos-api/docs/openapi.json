@@ -1,0 +1,264 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "PortOS API",
+    "description": "PortOS — Next-Generation Port Operations Management System (Phase 1 core platform). Fully bilingual (English/Persian, RTL) with Jalali/Gregorian calendar support (PRD §3).",
+    "version": "1.0.0",
+    "contact": { "name": "PortOS Engineering", "url": "https://portos.dev" }
+  },
+  "servers": [{ "url": "/", "description": "Current host" }],
+  "tags": [
+    { "name": "auth", "description": "Authentication and session (F-44)" },
+    { "name": "vessels", "description": "Vessels, calls, berths and allocation (F-1..F-5)" },
+    { "name": "yard", "description": "Yard blocks, containers, holds, reefers (F-7..F-12)" },
+    { "name": "gate", "description": "Appointments, gate transactions, passes (F-17..F-21)" },
+    { "name": "work", "description": "Equipment and job dispatch (F-13..F-15)" },
+    { "name": "billing", "description": "Tariffs, FX, invoices, payments (F-27..F-30)" },
+    { "name": "kpi", "description": "Operational dashboards (F-31, F-32)" },
+    { "name": "edi", "description": "EDIFACT import/export (I-2)" },
+    { "name": "i18n", "description": "Localization resources (L-1..L-10)" },
+    { "name": "admin", "description": "Users, audit, webhooks, incidents (F-38, F-40)" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    },
+    "parameters": {
+      "lang": {
+        "name": "lang", "in": "query", "required": false,
+        "description": "Response language: en | fa (default from user preference)",
+        "schema": { "type": "string", "enum": ["en", "fa"] }
+      },
+      "calendar": {
+        "name": "calendar", "in": "query", "required": false,
+        "description": "Display calendar: gregorian | jalali (storage/APIs remain ISO 8601 UTC — L-3)",
+        "schema": { "type": "string", "enum": ["gregorian", "jalali"] }
+      },
+      "numerals": {
+        "name": "numerals", "in": "query", "required": false,
+        "description": "Display numerals: western | persian (L-4)",
+        "schema": { "type": "string", "enum": ["western", "persian"] }
+      }
+    },
+    "schemas": {
+      "Problem": {
+        "type": "object",
+        "description": "RFC 7807 problem+json with localized title/detail (L-8)",
+        "properties": {
+          "type": { "type": "string", "format": "uri" },
+          "title": { "type": "string" },
+          "status": { "type": "integer" },
+          "detail": { "type": "string" },
+          "detail_raw": { "type": "string" }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["username", "password"],
+        "properties": {
+          "username": { "type": "string" },
+          "password": { "type": "string", "format": "password" }
+        }
+      },
+      "CreateVessel": {
+        "type": "object",
+        "required": ["imo", "name_en", "name_fa", "loa_m", "beam_m", "max_draft_m", "dwt_t"],
+        "properties": {
+          "imo": { "type": "string", "description": "IMO number with valid check digit, e.g. 9811000" },
+          "name_en": { "type": "string" },
+          "name_fa": { "type": "string" },
+          "mmsi": { "type": "string" },
+          "flag_code": { "type": "string" },
+          "loa_m": { "type": "number" },
+          "beam_m": { "type": "number" },
+          "max_draft_m": { "type": "number" },
+          "dwt_t": { "type": "integer" },
+          "reefer_points": { "type": "integer" },
+          "gearless": { "type": "boolean" }
+        }
+      },
+      "CreateCall": {
+        "type": "object",
+        "required": ["vessel_id", "voyage_code", "port", "eta_utc"],
+        "properties": {
+          "vessel_id": { "type": "string", "format": "uuid" },
+          "voyage_code": { "type": "string" },
+          "port": { "type": "string", "description": "UN/LOCODE, e.g. IRBND" },
+          "eta_utc": { "type": "string", "format": "date-time" },
+          "etd_utc": { "type": "string", "format": "date-time" },
+          "cargo_mix": { "$ref": "#/components/schemas/CargoMix" }
+        }
+      },
+      "CargoMix": {
+        "type": "object",
+        "properties": {
+          "discharge_teu": { "type": "integer" },
+          "load_teu": { "type": "integer" },
+          "reefer_units": { "type": "integer" },
+          "dangerous_units": { "type": "integer" },
+          "over_gauge_units": { "type": "integer" }
+        }
+      },
+      "BerthSuggestion": {
+        "type": "object",
+        "properties": {
+          "berth": { "type": "string", "format": "uuid" },
+          "berth_code": { "type": "string" },
+          "planned_from": { "type": "string", "format": "date-time" },
+          "planned_to": { "type": "string", "format": "date-time" },
+          "score": { "type": "number", "nullable": true },
+          "reasons": { "type": "array", "items": { "type": "string" }, "description": "Explainable reasons (PRD §6.6)" }
+        }
+      },
+      "UpsertContainer": {
+        "type": "object",
+        "required": ["number", "size_type"],
+        "properties": {
+          "number": { "type": "string", "description": "ISO 6346 number with valid check digit" },
+          "size_type": { "type": "string", "description": "ISO size/type code, e.g. 22G1, 45R1" },
+          "weight_kg": { "type": "integer" },
+          "imdg_class": { "type": "string", "nullable": true },
+          "reefer_setpoint_c": { "type": "number", "nullable": true },
+          "over_gauge": { "type": "boolean" },
+          "seal_number": { "type": "string", "nullable": true },
+          "pol": { "type": "string" },
+          "pod": { "type": "string" }
+        }
+      },
+      "StartTx": {
+        "type": "object",
+        "required": ["direction", "plate", "driver_license", "gate_lane"],
+        "properties": {
+          "direction": { "type": "string", "enum": ["import", "export", "empty_pickup", "empty_return"] },
+          "appointment_reference": { "type": "string" },
+          "container": { "type": "string" },
+          "plate": { "type": "string" },
+          "driver_license": { "type": "string" },
+          "gate_lane": { "type": "string" }
+        }
+      },
+      "StepRequest": {
+        "type": "object",
+        "required": ["kind", "ok"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["appointment_check", "driver_id", "ocr_scan", "seal_check", "release_check", "yard_handover", "ramp_out"] },
+          "ok": { "type": "boolean" },
+          "detail": { "type": "string" },
+          "ocr_container": { "type": "string" },
+          "seal_number": { "type": "string" }
+        }
+      },
+      "GenerateInvoice": {
+        "type": "object",
+        "required": ["customer_id"],
+        "properties": {
+          "customer_id": { "type": "string", "format": "uuid" },
+          "container": { "type": "string", "description": "storage/reefer-plug charges for this container" },
+          "vessel_call_id": { "type": "string", "format": "uuid", "description": "per-move + call fee charges" },
+          "currency": { "type": "string", "enum": ["IRR", "USD", "EUR", "AED", "TRY", "CNY"] },
+          "notes": { "type": "string" }
+        }
+      },
+      "EdiImport": {
+        "type": "object",
+        "required": ["message_type", "raw"],
+        "properties": {
+          "message_type": { "type": "string", "enum": ["COPARN", "CODECO", "COARRI", "BAPLIE"] },
+          "raw": { "type": "string", "description": "Raw EDIFACT interchange (optional UNA header)" }
+        }
+      }
+    }
+  },
+  "security": [{ "bearerAuth": [] }],
+  "paths": {
+    "/healthz": { "get": { "tags": ["auth"], "summary": "Liveness probe", "security": [], "responses": { "200": { "description": "OK" } } } },
+    "/readyz": { "get": { "tags": ["auth"], "summary": "Readiness probe (migrations applied)", "security": [], "responses": { "200": { "description": "Ready" }, "503": { "description": "Starting" } } } },
+    "/metrics": { "get": { "tags": ["auth"], "summary": "Prometheus metrics", "security": [], "responses": { "200": { "description": "Text exposition" } } } },
+    "/v1/auth/login": {
+      "post": {
+        "tags": ["auth"], "summary": "Sign in (rate-limited)", "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginRequest" } } } },
+        "responses": {
+          "200": { "description": "JWT access token + saved preferences" },
+          "401": { "description": "Invalid credentials", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "429": { "description": "Rate limited" }
+        }
+      }
+    },
+    "/v1/auth/me": { "get": { "tags": ["auth"], "summary": "Current identity + permissions", "responses": { "200": { "description": "OK" } } } },
+    "/v1/i18n/catalog": {
+      "get": {
+        "tags": ["i18n"], "summary": "Resource bundle for a locale (L-10)", "security": [],
+        "parameters": [{ "$ref": "#/components/parameters/lang" }],
+        "responses": { "200": { "description": "Catalog entries + defaults" } }
+      }
+    },
+    "/v1/i18n/preferences": { "post": { "tags": ["i18n"], "summary": "Save user locale/calendar/numerals (L-1)", "responses": { "200": { "description": "Saved" } } } },
+    "/v1/i18n/format-demo": { "get": { "tags": ["i18n"], "summary": "Locale formatting showcase (dates, money, bidi)", "security": [], "parameters": [{ "$ref": "#/components/parameters/calendar" }], "responses": { "200": { "description": "Formats" } } } },
+    "/v1/vessels": {
+      "post": { "tags": ["vessels"], "summary": "Register vessel (F-47)", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateVessel" } } } }, "responses": { "200": { "description": "Created" }, "422": { "description": "Invalid IMO/check digit" } } },
+      "get": { "tags": ["vessels"], "summary": "List vessels", "responses": { "200": { "description": "OK" } } }
+    },
+    "/v1/vessel-calls": {
+      "post": { "tags": ["vessels"], "summary": "Register vessel call (F-1)", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateCall" } } } }, "responses": { "200": { "description": "Created; publishes vessel_call.created" } } },
+      "get": { "tags": ["vessels"], "summary": "List calls (status/from/to filters, localized eta_display)", "parameters": [{ "$ref": "#/components/parameters/calendar" }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/v1/vessel-calls/{id}/berth-request": { "post": { "tags": ["vessels"], "summary": "Request a berth (F-1)", "responses": { "200": { "description": "Requested" } } } },
+    "/v1/vessel-calls/{id}/berth-suggest": { "post": { "tags": ["vessels"], "summary": "Explainable berth allocation suggestions (F-2, §6.6)", "responses": { "200": { "description": "Ranked suggestions with reasons", "content": { "application/json": { "schema": { "type": "object", "properties": { "suggestions": { "type": "array", "items": { "$ref": "#/components/schemas/BerthSuggestion" } } } } } } } } } },
+    "/v1/vessel-calls/{id}/berth-allocate": { "post": { "tags": ["vessels"], "summary": "Approve a suggestion (human override supported)", "responses": { "200": { "description": "Allocated; publishes berth.allocated" }, "422": { "description": "Not feasible" } } } },
+    "/v1/vessel-calls/{id}/status": { "post": { "tags": ["vessels"], "summary": "Lifecycle transition (guarded)", "responses": { "200": { "description": "Changed" }, "409": { "description": "Illegal transition" } } } },
+    "/v1/vessel-calls/{id}/eta": { "post": { "tags": ["vessels"], "summary": "Update predicted ETA (F-3)", "responses": { "200": { "description": "Updated" } } } },
+    "/v1/yard/blocks": {
+      "post": { "tags": ["yard"], "summary": "Create yard block with slots (F-7)", "responses": { "200": { "description": "Created" } } },
+      "get": { "tags": ["yard"], "summary": "List blocks", "responses": { "200": { "description": "OK" } } }
+    },
+    "/v1/yard/containers": {
+      "post": { "tags": ["yard"], "summary": "Upsert container master data (ISO 6346 validated)", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpsertContainer" } } } }, "responses": { "200": { "description": "Saved" } } },
+      "get": { "tags": ["yard"], "summary": "List containers by state", "responses": { "200": { "description": "OK" } } }
+    },
+    "/v1/yard/containers/{number}/place": { "post": { "tags": ["yard"], "summary": "Segregation-aware slot assignment (F-7, F-8)", "responses": { "200": { "description": "Placed with reasons" }, "409": { "description": "Active hold / no eligible block" } } } },
+    "/v1/yard/containers/{number}/hold": { "post": { "tags": ["yard"], "summary": "Place hold (F-11)", "responses": { "200": { "description": "Placed" } } } },
+    "/v1/yard/holds/{id}/release": { "post": { "tags": ["yard"], "summary": "Release hold", "responses": { "200": { "description": "Released" }, "404": { "description": "Not open" } } } },
+    "/v1/yard/containers/{number}/reefer-reading": { "post": { "tags": ["yard"], "summary": "Reefer telemetry; auto alarm on deviation (F-10)", "responses": { "200": { "description": "Recorded (alarm raised when out of tolerance)" } } } },
+    "/v1/gate/appointments": {
+      "post": { "tags": ["gate"], "summary": "Book truck appointment (F-17)", "responses": { "200": { "description": "Booked" } } },
+      "get": { "tags": ["gate"], "summary": "Appointments in a slot window (F-20)", "responses": { "200": { "description": "OK" } } }
+    },
+    "/v1/gate/transactions/start": { "post": { "tags": ["gate"], "summary": "Start gate transaction (Idempotency-Key honored — §6.2)", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StartTx" } } } }, "responses": { "200": { "description": "Started" } } } },
+    "/v1/gate/transactions/{id}/step": { "post": { "tags": ["gate"], "summary": "Apply workflow step; completion issues pass + EIR (F-18, F-19)", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StepRequest" } } } }, "responses": { "200": { "description": "Step applied" }, "409": { "description": "Wrong order / finished" } } } },
+    "/v1/gate/queue": { "get": { "tags": ["gate"], "summary": "Truck queue visibility (F-20)", "responses": { "200": { "description": "Queue stats" } } } },
+    "/v1/gate/passes/{pass_no}": { "get": { "tags": ["gate"], "summary": "Digital gate pass (F-19)", "responses": { "200": { "description": "Pass" } } } },
+    "/v1/work/jobs": {
+      "post": { "tags": ["work"], "summary": "Queue job (DG/reefer prioritized)", "responses": { "200": { "description": "Queued" } } },
+      "get": { "tags": ["work"], "summary": "List jobs by status", "responses": { "200": { "description": "OK" } } }
+    },
+    "/v1/work/jobs/{id}/dispatch": { "post": { "tags": ["work"], "summary": "Dispatch to compatible equipment (F-13)", "responses": { "200": { "description": "Dispatched with task info (F-14)" }, "409": { "description": "No equipment available" } } } },
+    "/v1/work/jobs/{id}/complete": { "post": { "tags": ["work"], "summary": "Operator completion + move record (F-14, F-32)", "responses": { "200": { "description": "Completed" } } } },
+    "/v1/billing/tariffs": {
+      "post": { "tags": ["billing"], "summary": "Upsert tariff (F-27)", "responses": { "200": { "description": "Saved" } } },
+      "get": { "tags": ["billing"], "summary": "List applicable tariffs", "responses": { "200": { "description": "OK" } } }
+    },
+    "/v1/billing/fx": { "post": { "tags": ["billing"], "summary": "Set exchange rate (L-9)", "responses": { "200": { "description": "Saved" } } } },
+    "/v1/billing/invoices/generate": { "post": { "tags": ["billing"], "summary": "Automatic charge calculation + invoice (F-28, F-29)", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GenerateInvoice" } } } }, "responses": { "200": { "description": "Issued" }, "422": { "description": "Nothing to invoice" } } } },
+    "/v1/billing/invoices/{number}": { "get": { "tags": ["billing"], "summary": "Invoice with bilingual lines + localized display (L-8)", "responses": { "200": { "description": "OK" } } } },
+    "/v1/billing/invoices/{number}/payments": { "post": { "tags": ["billing"], "summary": "Record payment (F-29)", "responses": { "200": { "description": "Recorded" } } } },
+    "/v1/kpi": { "get": { "tags": ["kpi"], "summary": "Operations KPIs with localized display (F-31, F-32)", "responses": { "200": { "description": "KPIs" } } } },
+    "/v1/edi/import": { "post": { "tags": ["edi"], "summary": "Import EDIFACT message (I-2)", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EdiImport" } } } }, "responses": { "200": { "description": "Applied" }, "422": { "description": "Parse error" } } } },
+    "/v1/edi/export": { "post": { "tags": ["edi"], "summary": "Export BAPLIE stowage plan (I-2)", "responses": { "200": { "description": "Raw EDIFACT" } } } },
+    "/v1/events/stream": { "get": { "tags": ["admin"], "summary": "SSE stream of domain events (F-26); token via ?token=", "responses": { "200": { "description": "text/event-stream" } } } },
+    "/v1/admin/users": {
+      "post": { "tags": ["admin"], "summary": "Create user with role (F-44)", "responses": { "200": { "description": "Created" } } },
+      "get": { "tags": ["admin"], "summary": "List users", "responses": { "200": { "description": "OK" } } }
+    },
+    "/v1/admin/audit": { "get": { "tags": ["admin"], "summary": "Audit trail query (F-40)", "responses": { "200": { "description": "Records" } } } },
+    "/v1/admin/webhooks": {
+      "post": { "tags": ["admin"], "summary": "Register webhook subscription (I-1)", "responses": { "200": { "description": "Created; secret shown once" } } },
+      "get": { "tags": ["admin"], "summary": "List webhooks", "responses": { "200": { "description": "OK" } } }
+    },
+    "/v1/admin/incidents": {
+      "post": { "tags": ["admin"], "summary": "Report safety incident (F-38)", "responses": { "200": { "description": "Reported" } } },
+      "get": { "tags": ["admin"], "summary": "List incidents", "responses": { "200": { "description": "OK" } } }
+    },
+    "/v1/admin/config": { "get": { "tags": ["admin"], "summary": "Effective configuration (secret redacted)", "responses": { "200": { "description": "Config" } } } }
+  }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "portos-edi"
+description = "PortOS EDI: EDIFACT tokenizer + COPARN/CODECO/COARRI/BAPLIE message subset (I-2)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+portos-core.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+chrono.workspace = true

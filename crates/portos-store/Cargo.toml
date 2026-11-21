@@ -1,0 +1,18 @@
+[package]
+name = "portos-store"
+description = "PortOS persistence: SQLite (WAL) with migrations, repositories and a hand-rolled pool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+portos-core.workspace = true
+portos-i18n.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

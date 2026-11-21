@@ -1,0 +1,38 @@
+[package]
+name = "portos-api"
+description = "PortOS API server (axum): REST v1, JWT+RBAC, SSE events, webhooks, EDI, i18n"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "portosd"
+path = "src/main.rs"
+
+[dependencies]
+portos-core.workspace = true
+portos-i18n.workspace = true
+portos-edi.workspace = true
+portos-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tokio-stream = { workspace = true, features = ["sync"] }
+jsonwebtoken.workspace = true
+argon2.workspace = true
+ureq.workspace = true
+ring = "0.17"
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }

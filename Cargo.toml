@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/portos-core",
+    "crates/portos-i18n",
+    "crates/portos-edi",
+    "crates/portos-store",
+    "crates/portos-api",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+description = "PortOS — Next-Generation Port Operations Management System (Phase 1 core platform)"
+authors = ["PortOS Engineering"]
+
+[workspace.dependencies]
+# internal crates
+portos-core = { path = "crates/portos-core" }
+portos-i18n = { path = "crates/portos-i18n" }
+portos-edi = { path = "crates/portos-edi" }
+portos-store = { path = "crates/portos-store" }
+
+# serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# time
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+
+# identifiers
+uuid = { version = "1.11", features = ["v4", "v7", "serde"] }
+
+# errors & diagnostics
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# persistence
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# web server
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1.41", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "timeout", "limit"] }
+tokio-stream = "0.1"
+
+# security
+jsonwebtoken = "9.3"
+argon2 = "0.5"
+
+# outbound webhooks (blocking client used from a dedicated worker task)
+ureq = { version = "2.9", default-features = false, features = ["json", "tls"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "debuginfo"

@@ -1,0 +1,23 @@
+services:
+  portos:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORTOS_JWT_SECRET: ${PORTOS_JWT_SECRET:?set PORTOS_JWT_SECRET in .env}
+      PORTOS_TENANT: ${PORTOS_TENANT:-IRBND-CT1}
+      PORTOS_LOG_FORMAT: json
+      PORTOS_REQUIRE_SECRET: "1"
+      PORTOS_DEFAULT_LOCALE: fa
+      PORTOS_I18N_EXTRA_DIRS: /etc/portos/i18n
+    volumes:
+      - portos-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "command -v wget >/dev/null && wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  portos-data:
