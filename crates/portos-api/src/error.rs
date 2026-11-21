@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use portos_core::{CoreError, CoreResult};
-use portos_i18n::{Args, CatalogSet, Locale};
+use portos_i18n::{Args, Locale};
 
 /// A fully-rendered error response. Handlers build it via [`problem`]
 /// (or [`problem_from`]) so localization happens where the state and
@@ -49,21 +49,42 @@ pub fn status_for(err: &CoreError) -> StatusCode {
 
 /// Build a localized problem+json response from a [`CoreError`].
 pub fn problem_from(state: &crate::state::AppState, locale: Locale, err: CoreError) -> ApiError {
-    let detail = err.to_string();
     let key = err.message_key();
+    // Internal errors are logged server-side but never echoed to clients:
+    // database paths, SQL and file system details are not caller data
+    // (§6.3). Validation/conflict/not-found details are safe to expose.
+    let (detail, expose_detail) = match &err {
+        CoreError::Internal(inner) => {
+            // A short correlation id lets support find the server log entry
+            // without exposing the underlying error text to the caller.
+            let reference = uuid::Uuid::now_v7().simple().to_string();
+            let reference = reference[..8].to_string();
+            tracing::error!(
+                problem = err.kind(),
+                reference = %reference,
+                error = %inner,
+                "internal error"
+            );
+            (reference, false)
+        }
+        _ => (err.to_string(), true),
+    };
     let args = Args::new().arg("detail", &detail);
     let title = state.t(locale, key, &args);
     let type_uri = format!("https://portos.dev/problems/{}", err.kind());
+    let mut body = serde_json::json!({
+        "type": type_uri,
+        "title": title,
+        "status": status_for(&err).as_u16(),
+        "detail": title,
+        "instance": err.kind(),
+    });
+    if expose_detail {
+        body["detail_raw"] = serde_json::Value::String(detail);
+    }
     ApiError {
         status: status_for(&err),
-        body: serde_json::json!({
-            "type": type_uri,
-            "title": title,
-            "status": status_for(&err).as_u16(),
-            "detail": title,
-            "detail_raw": detail,
-            "instance": err.kind(),
-        }),
+        body,
     }
 }
 
@@ -80,11 +101,18 @@ pub fn problem(
 /// (returns an English problem — prefer [`problem`] inside handlers).
 impl From<CoreError> for ApiError {
     fn from(err: CoreError) -> Self {
+        let title = match &err {
+            CoreError::Internal(inner) => {
+                tracing::error!(error = %inner, "internal error");
+                "internal error".to_string()
+            }
+            other => other.to_string(),
+        };
         ApiError::raw(
             status_for(&err),
             serde_json::json!({
                 "type": format!("https://portos.dev/problems/{}", err.kind()),
-                "title": err.to_string(),
+                "title": title,
                 "status": status_for(&err).as_u16(),
             }),
         )

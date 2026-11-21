@@ -172,7 +172,7 @@ impl CargoMix {
     pub fn cranes_needed(&self) -> u8 {
         let work = self.discharge_teu + self.load_teu;
         // Ceiling: 900 TEU/crane per working window, minimum one crane.
-        let base = ((work + 899) / 900).clamp(1, 8) as u8;
+        let base = work.div_ceil(900).clamp(1, 8) as u8;
         if self.reefer_units > 0 || self.dangerous_units > 0 {
             base.saturating_add(1).min(8)
         } else {
@@ -207,6 +207,13 @@ pub struct VesselCall {
     pub updated_at: DateTime<Utc>,
 }
 
+impl std::fmt::Display for CallStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = serde_json::to_string(self).unwrap_or_default();
+        f.write_str(s.trim_matches('"'))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,18 +246,18 @@ mod tests {
 
     #[test]
     fn cranes_needed_bounds() {
-        let mut mix = CargoMix { discharge_teu: 2500, load_teu: 500, ..Default::default() };
+        let mut mix = CargoMix {
+            discharge_teu: 2500,
+            load_teu: 500,
+            ..Default::default()
+        };
         assert_eq!(mix.cranes_needed(), 4);
-        mix = CargoMix { discharge_teu: 100, ..Default::default() };
+        mix = CargoMix {
+            discharge_teu: 100,
+            ..Default::default()
+        };
         assert_eq!(mix.cranes_needed(), 1);
         mix.dangerous_units = 10;
         assert_eq!(mix.cranes_needed(), 2);
-    }
-}
-
-impl std::fmt::Display for CallStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = serde_json::to_string(self).unwrap_or_default();
-        f.write_str(s.trim_matches('"'))
     }
 }

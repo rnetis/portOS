@@ -167,12 +167,21 @@ mod tests {
     fn dwell_and_truck_and_anchorage_means() {
         let t0 = Utc::now();
         let dwell = vec![
-            DwellSample { gate_in: t0, gate_out: t0 + Duration::hours(24) },
-            DwellSample { gate_in: t0, gate_out: t0 + Duration::hours(48) },
+            DwellSample {
+                gate_in: t0,
+                gate_out: t0 + Duration::hours(24),
+            },
+            DwellSample {
+                gate_in: t0,
+                gate_out: t0 + Duration::hours(48),
+            },
         ];
         assert!((avg_dwell_hours(&dwell).unwrap() - 36.0).abs() < 1e-9);
 
-        let trucks = vec![TruckSample { started_at: t0, completed_at: t0 + Duration::seconds(300) }];
+        let trucks = vec![TruckSample {
+            started_at: t0,
+            completed_at: t0 + Duration::seconds(300),
+        }];
         assert!((avg_truck_turnaround_minutes(&trucks).unwrap() - 5.0).abs() < 1e-9);
 
         let anch = vec![AnchorageSample {

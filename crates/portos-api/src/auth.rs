@@ -1,17 +1,16 @@
 //! Authentication: Argon2id password hashing, JWT access tokens and
 //! role→permission authorization (PRD F-44, §6.3).
 
+use axum::extract::Request;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::middleware::Next;
-use axum::extract::Request;
 use axum::response::{IntoResponse, Response};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use portos_core::{CoreError, CoreResult};
 use portos_i18n::Args;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -66,31 +65,84 @@ impl Role {
         // Every authenticated role can view dashboards and subscribe.
         base.extend(["kpi.view", "event.subscribe"]);
         match self {
-            Admin => base.union(&HashSet::from([
-                "vessel.manage", "berth.manage", "berth.allocate", "yard.manage",
-                "gate.operate", "gate.manage", "billing.view", "billing.manage",
-                "tariff.manage", "edi.import", "edi.export", "work.dispatch",
-                "work.manage", "incident.report", "admin.manage", "edi.process",
-            ])).copied().collect(),
-            OpsPlanner => base.union(&HashSet::from([
-                "vessel.manage", "berth.manage", "berth.allocate", "work.dispatch",
-                "work.manage", "gate.manage", "billing.view", "edi.import", "edi.process",
-            ])).copied().collect(),
-            YardPlanner => base.union(&HashSet::from([
-                "yard.manage", "work.dispatch", "work.manage", "gate.operate",
-            ])).copied().collect(),
-            GateClerk => base.union(&HashSet::from([
-                "gate.operate", "yard.manage", "incident.report",
-            ])).copied().collect(),
-            LineAgent => base.union(&HashSet::from([
-                "vessel.manage", "billing.view", "edi.import", "edi.export",
-            ])).copied().collect(),
-            Customs => base.union(&HashSet::from([
-                "yard.manage", "gate.operate", "edi.import", "edi.process",
-            ])).copied().collect(),
-            Finance => base.union(&HashSet::from([
-                "billing.view", "billing.manage", "tariff.manage",
-            ])).copied().collect(),
+            Admin => base
+                .union(&HashSet::from([
+                    "vessel.manage",
+                    "berth.manage",
+                    "berth.allocate",
+                    "yard.manage",
+                    "gate.operate",
+                    "gate.manage",
+                    "billing.view",
+                    "billing.manage",
+                    "tariff.manage",
+                    "edi.import",
+                    "edi.export",
+                    "work.dispatch",
+                    "work.manage",
+                    "incident.report",
+                    "admin.manage",
+                    "edi.process",
+                ]))
+                .copied()
+                .collect(),
+            OpsPlanner => base
+                .union(&HashSet::from([
+                    "vessel.manage",
+                    "berth.manage",
+                    "berth.allocate",
+                    "work.dispatch",
+                    "work.manage",
+                    "gate.manage",
+                    "billing.view",
+                    "edi.import",
+                    "edi.process",
+                ]))
+                .copied()
+                .collect(),
+            YardPlanner => base
+                .union(&HashSet::from([
+                    "yard.manage",
+                    "work.dispatch",
+                    "work.manage",
+                    "gate.operate",
+                ]))
+                .copied()
+                .collect(),
+            GateClerk => base
+                .union(&HashSet::from([
+                    "gate.operate",
+                    "yard.manage",
+                    "incident.report",
+                ]))
+                .copied()
+                .collect(),
+            LineAgent => base
+                .union(&HashSet::from([
+                    "vessel.manage",
+                    "billing.view",
+                    "edi.import",
+                    "edi.export",
+                ]))
+                .copied()
+                .collect(),
+            Customs => base
+                .union(&HashSet::from([
+                    "yard.manage",
+                    "gate.operate",
+                    "edi.import",
+                    "edi.process",
+                ]))
+                .copied()
+                .collect(),
+            Finance => base
+                .union(&HashSet::from([
+                    "billing.view",
+                    "billing.manage",
+                    "tariff.manage",
+                ]))
+                .copied()
+                .collect(),
             Viewer => base,
         }
     }
@@ -130,9 +182,9 @@ impl AuthContext {
 
 /// Hash a password with Argon2id (recommended parameters).
 pub fn hash_password(password: &str) -> CoreResult<String> {
-    use rand_core::OsRng;
     use argon2::password_hash::{PasswordHasher, SaltString};
     use argon2::Argon2;
+    use rand_core::OsRng;
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
@@ -153,7 +205,12 @@ pub fn verify_password(password: &str, hash: &str) -> CoreResult<bool> {
 }
 
 /// Issue an access token.
-pub fn issue_token(state: &AppState, username: &str, user_id: &str, role: &str) -> CoreResult<String> {
+pub fn issue_token(
+    state: &AppState,
+    username: &str,
+    user_id: &str,
+    role: &str,
+) -> CoreResult<String> {
     let now = chrono::Utc::now().timestamp();
     let claims = Claims {
         sub: username.to_string(),
@@ -186,11 +243,16 @@ fn decode_token(state: &AppState, token: &str) -> CoreResult<Claims> {
 pub fn bearer_token(headers: &HeaderMap, query_token: Option<&str>) -> Option<String> {
     if let Some(v) = headers.get("authorization").and_then(|h| h.to_str().ok()) {
         let v = v.trim();
-        if let Some(rest) = v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")) {
+        if let Some(rest) = v
+            .strip_prefix("Bearer ")
+            .or_else(|| v.strip_prefix("bearer "))
+        {
             return Some(rest.trim().to_string());
         }
     }
-    query_token.filter(|t| !t.trim().is_empty()).map(str::to_string)
+    query_token
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_string)
 }
 
 /// Authentication middleware: validates the JWT and inserts
@@ -202,14 +264,32 @@ pub async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let token = bearer_token(&headers, raw.as_deref().and_then(|q| {
-        q.split('&').find_map(|pair| pair.strip_prefix("token="))
-    }));
+    let token = bearer_token(
+        &headers,
+        raw.as_deref()
+            .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token="))),
+    );
     let Some(token) = token else {
         return unauthorized(&state);
     };
     match decode_token(&state, &token) {
         Ok(claims) => {
+            // Tokens are stateless, so re-check the account on every request:
+            // deactivating a user must revoke access immediately.
+            let Ok(uid) = claims.uid.parse::<uuid::Uuid>() else {
+                return unauthorized(&state);
+            };
+            let uid = portos_core::ids::UserId::from_uuid(uid);
+            let active = crate::db::db(&state.store, move |s| {
+                portos_store::users::find_by_id(s, uid)
+            })
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|u| u.active);
+            if !active {
+                return unauthorized(&state);
+            }
             let role = Role::parse(&claims.role).unwrap_or(Role::Viewer);
             req.extensions_mut().insert(AuthContext {
                 user_id: claims.uid,
@@ -241,17 +321,6 @@ fn unauthorized(state: &AppState) -> Response {
         .into_response()
 }
 
-/// A task queue entry for the webhook dispatcher.
-#[derive(Debug, Clone)]
-pub struct WebhookDelivery {
-    pub event_id: Uuid,
-    pub event_type: String,
-    pub payload: String,
-}
-
-/// Shared state for the dispatcher (see events.rs).
-pub type SharedDeliveryQueue = Arc<std::sync::Mutex<std::collections::VecDeque<WebhookDelivery>>>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,9 +328,16 @@ mod tests {
     #[test]
     fn role_permissions_cover_everything_for_admin() {
         for p in [
-            "vessel.manage", "berth.allocate", "yard.manage", "gate.operate",
-            "billing.manage", "tariff.manage", "edi.import", "work.dispatch",
-            "admin.manage", "kpi.view",
+            "vessel.manage",
+            "berth.allocate",
+            "yard.manage",
+            "gate.operate",
+            "billing.manage",
+            "tariff.manage",
+            "edi.import",
+            "work.dispatch",
+            "admin.manage",
+            "kpi.view",
         ] {
             assert!(Role::Admin.permissions().contains(p), "admin lacks {p}");
         }

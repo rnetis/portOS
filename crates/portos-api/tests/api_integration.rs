@@ -6,7 +6,6 @@ use axum::http::{Request, StatusCode};
 use portos_api::config::Config;
 use portos_api::state::AppState;
 use portos_store::Store;
-use tower::Service;
 use tower::ServiceExt;
 
 fn test_state() -> (AppState, std::path::PathBuf) {
@@ -29,6 +28,7 @@ fn test_state() -> (AppState, std::path::PathBuf) {
         log_format: portos_api::config::LogFormat::Json,
         webhook_timeout_secs: 5,
         require_secret: false,
+        trust_proxy: false,
     };
     let store = Store::open(&db_path).unwrap();
     portos_api::seed::seed_demo(&store, "TEST-CT1").unwrap();
@@ -49,12 +49,12 @@ async fn req(
     if body.is_some() {
         builder = builder.header("content-type", "application/json");
     }
-    let request = builder
-        .body(Body::from(body.unwrap_or_default()))
-        .unwrap();
+    let request = builder.body(Body::from(body.unwrap_or_default())).unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 2_000_000).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 2_000_000)
+        .await
+        .unwrap();
     let json: serde_json::Value = if bytes.is_empty() {
         serde_json::Value::Null
     } else {
@@ -66,7 +66,7 @@ async fn req(
 #[tokio::test]
 async fn full_operational_flow() {
     let (state, dir) = test_state();
-    let mut app = portos_api::routes::build(state.clone());
+    let app = portos_api::routes::build(state.clone());
     state.set_ready(true);
 
     // --- health & readiness ------------------------------------------------
@@ -99,7 +99,7 @@ async fn full_operational_flow() {
     assert!(!token.is_empty());
 
     // Persian users get a localized welcome message.
-    assert!(body["message"].as_str().unwrap().chars().any(|c| !c.is_ascii()), "fa message");
+    assert!(!body["message"].as_str().unwrap().is_ascii(), "fa message");
 
     // --- protected route without token → 401 problem+json ------------------
     let (status, body) = req(&app, "GET", "/v1/vessels", None, None).await;
@@ -116,6 +116,29 @@ async fn full_operational_flow() {
     )
     .await;
     let clerk_token = clerk_login["access_token"].as_str().unwrap().to_string();
+
+    // Least privilege: yard and billing steps use their own roles rather
+    // than borrowing the planner's token.
+    let (status, yard_login) = req(
+        &app,
+        "POST",
+        "/v1/auth/login",
+        None,
+        Some(r#"{"username":"yardplanner","password":"Yard!2026"}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{yard_login}");
+    let yard_token = yard_login["access_token"].as_str().unwrap().to_string();
+    let (status, finance_login) = req(
+        &app,
+        "POST",
+        "/v1/auth/login",
+        None,
+        Some(r#"{"username":"finance","password":"Finance!2026"}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{finance_login}");
+    let finance_token = finance_login["access_token"].as_str().unwrap().to_string();
     let (status, body) = req(
         &app,
         "POST",
@@ -133,17 +156,20 @@ async fn full_operational_flow() {
         "POST",
         "/v1/vessels",
         Some(&token),
-        Some(serde_json::json!({
-            "imo": imo.as_str(),
-            "name_en": "MV Test Runner",
-            "name_fa": "رانر آزمون",
-            "loa_m": 250.0,
-            "beam_m": 32.0,
-            "max_draft_m": 12.5,
-            "dwt_t": 50_000,
-            "reefer_points": 300,
-            "gearless": true
-        }).to_string()),
+        Some(
+            serde_json::json!({
+                "imo": imo.as_str(),
+                "name_en": "MV Test Runner",
+                "name_fa": "رانر آزمون",
+                "loa_m": 250.0,
+                "beam_m": 32.0,
+                "max_draft_m": 12.5,
+                "dwt_t": 50_000,
+                "reefer_points": 300,
+                "gearless": true
+            })
+            .to_string(),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -155,13 +181,16 @@ async fn full_operational_flow() {
         "POST",
         "/v1/vessel-calls",
         Some(&token),
-        Some(serde_json::json!({
-            "vessel_id": vessel_id,
-            "voyage_code": "IT001E",
-            "port": "IRBND",
-            "eta_utc": eta,
-            "cargo_mix": {"discharge_teu": 900, "load_teu": 200}
-        }).to_string()),
+        Some(
+            serde_json::json!({
+                "vessel_id": vessel_id,
+                "voyage_code": "IT001E",
+                "port": "IRBND",
+                "eta_utc": eta,
+                "cargo_mix": {"discharge_teu": 900, "load_teu": 200}
+            })
+            .to_string(),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -203,7 +232,10 @@ async fn full_operational_flow() {
         .iter()
         .position(|s| !s["score"].is_null())
         .expect("at least one feasible berth");
-    let berth_code = body["suggestions"][feasible]["berth_code"].as_str().unwrap().to_string();
+    let berth_code = body["suggestions"][feasible]["berth_code"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let (status, body) = req(
         &app,
@@ -214,8 +246,11 @@ async fn full_operational_flow() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["allocation"]["berth_code"], serde_json::json!(berth_code));
-    assert!(body["allocation"]["reasons"].as_array().unwrap().len() > 0);
+    assert_eq!(
+        body["allocation"]["berth_code"],
+        serde_json::json!(berth_code)
+    );
+    assert!(!body["allocation"]["reasons"].as_array().unwrap().is_empty());
 
     // --- yard: container upsert + placement with reasons --------------------
     let cn = portos_core::container::ContainerNumber::from_prefix("ITPU123456").unwrap();
@@ -223,13 +258,16 @@ async fn full_operational_flow() {
         &app,
         "POST",
         "/v1/yard/containers",
-        Some(&token),
-        Some(serde_json::json!({
-            "number": cn.as_str(),
-            "size_type": "22G1",
-            "weight_kg": 21000,
-            "pod": "AEJEA"
-        }).to_string()),
+        Some(&yard_token),
+        Some(
+            serde_json::json!({
+                "number": cn.as_str(),
+                "size_type": "22G1",
+                "weight_kg": 21000,
+                "pod": "AEJEA"
+            })
+            .to_string(),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -238,19 +276,22 @@ async fn full_operational_flow() {
         &app,
         "POST",
         &format!("/v1/yard/containers/{}/place", cn.as_str()),
-        Some(&token),
+        Some(&yard_token),
         Some(r#"{"next_leg":"vessel"}"#.into()),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body["reasons"].as_array().unwrap().len() > 0, "explainable placement");
+    assert!(
+        !body["reasons"].as_array().unwrap().is_empty(),
+        "explainable placement"
+    );
 
     // Hold then place → conflict.
     let (status, _) = req(
         &app,
         "POST",
         &format!("/v1/yard/containers/{}/hold", cn.as_str()),
-        Some(&token),
+        Some(&yard_token),
         Some(r#"{"kind":"customs","reason":"scan"}"#.into()),
     )
     .await;
@@ -259,7 +300,7 @@ async fn full_operational_flow() {
         &app,
         "POST",
         &format!("/v1/yard/containers/{}/place", cn.as_str()),
-        Some(&token),
+        Some(&yard_token),
         Some(r#"{"next_leg":"vessel"}"#.into()),
     )
     .await;
@@ -273,19 +314,25 @@ async fn full_operational_flow() {
         "POST",
         "/v1/gate/appointments",
         Some(&token),
-        Some(serde_json::json!({
-            "driver_name": "Ali Rezaei",
-            "driver_license": "DL-IT-1",
-            "plate": "22A99999",
-            "container": cn.as_str(),
-            "direction": "export",
-            "slot_from": slot_from,
-            "slot_to": slot_to
-        }).to_string()),
+        Some(
+            serde_json::json!({
+                "driver_name": "Ali Rezaei",
+                "driver_license": "DL-IT-1",
+                "plate": "22A99999",
+                "container": cn.as_str(),
+                "direction": "export",
+                "slot_from": slot_from,
+                "slot_to": slot_to
+            })
+            .to_string(),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let appt_ref = body["appointment"]["reference"].as_str().unwrap().to_string();
+    let appt_ref = body["appointment"]["reference"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let start_body = serde_json::json!({
         "direction": "export",
@@ -317,14 +364,17 @@ async fn full_operational_flow() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    // Walk the export flow: appointment → driver → OCR → seal → release → ramp out.
+    // Walk the export flow: appointment → driver → OCR → seal → release →
+    // yard handover (export containers enter the yard; `ramp_out` is the
+    // import/empty-pickup terminal step).
+    let mut last_step_body = serde_json::Value::Null;
     for (kind, ocr) in [
         ("appointment_check", None),
         ("driver_id", None),
         ("ocr_scan", Some(cn.as_str().to_string())),
         ("seal_check", None),
         ("release_check", None),
-        ("ramp_out", None),
+        ("yard_handover", None),
     ] {
         let payload = serde_json::json!({
             "kind": kind,
@@ -341,17 +391,24 @@ async fn full_operational_flow() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+        last_step_body = body;
     }
     // Completed: gate pass + EIR issued, container marked gate-out.
-    assert!(body["issued"]["pass_no"].as_str().is_some(), "{body}");
-    assert!(body["elapsed_seconds"].as_f64().unwrap() < 5.0, "gate flow under 5s target");
+    assert!(
+        last_step_body["issued"]["pass_no"].as_str().is_some(),
+        "{last_step_body}"
+    );
+    assert!(
+        last_step_body["elapsed_seconds"].as_f64().unwrap() < 5.0,
+        "gate flow under 5s target"
+    );
 
     // --- billing: tariff, FX, invoice generation, payment ------------------
     let (status, body) = req(
         &app,
         "POST",
         "/v1/billing/invoices/generate",
-        Some(&token),
+        Some(&finance_token),
         Some(serde_json::json!({ "container": cn.as_str() }).to_string()),
     )
     .await;
@@ -364,11 +421,14 @@ async fn full_operational_flow() {
         &app,
         "POST",
         "/v1/billing/invoices/generate",
-        Some(&token),
-        Some(serde_json::json!({
-            "customer_id": body_customer(&app).await,
-            "container": seed_storage_container(&app).await
-        }).to_string()),
+        Some(&finance_token),
+        Some(
+            serde_json::json!({
+                "customer_id": body_customer(&app).await,
+                "container": seed_storage_container(&app, cn.as_str()).await
+            })
+            .to_string(),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -379,20 +439,25 @@ async fn full_operational_flow() {
         &app,
         "GET",
         &format!("/v1/billing/invoices/{invoice_no}?lang=fa&calendar=jalali"),
-        Some(&token),
+        Some(&finance_token),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     // Localized display shows Jalali digits for fa clients (L-3/L-4).
     let total_fa = body["display"]["total"].as_str().unwrap();
-    assert!(total_fa.chars().any(|c| ('\u{06F0}'..='\u{06F9}').contains(&c)), "{total_fa}");
+    assert!(
+        total_fa
+            .chars()
+            .any(|c| ('\u{06F0}'..='\u{06F9}').contains(&c)),
+        "{total_fa}"
+    );
 
     let (status, body) = req(
         &app,
         "POST",
         &format!("/v1/billing/invoices/{invoice_no}/payments"),
-        Some(&token),
+        Some(&finance_token),
         Some(r#"{"amount_minor": 1000000, "method": "gateway", "reference": "TX-1"}"#.into()),
     )
     .await;
@@ -413,7 +478,9 @@ async fn full_operational_flow() {
          EQD+CN+{}+22G1+5'\n\
          STS+1'\n\
          UNT+7+MSGT1'\nUNZ+1+MSGT1'",
-        portos_core::container::ContainerNumber::from_prefix("EDIP123456").unwrap().as_str()
+        portos_core::container::ContainerNumber::from_prefix("EDIU123456")
+            .unwrap()
+            .as_str()
     );
     let (status, body) = req(
         &app,
@@ -451,14 +518,23 @@ async fn full_operational_flow() {
         .iter()
         .filter_map(|r| r["action"].as_str())
         .collect();
-    assert!(actions.contains(&"berth.allocate"), "audit has berth.allocate: {actions:?}");
-    assert!(actions.iter().any(|a| a.starts_with("gate.tx")), "audit has gate actions");
+    assert!(
+        actions.contains(&"berth.allocate"),
+        "audit has berth.allocate: {actions:?}"
+    );
+    assert!(
+        actions.iter().any(|a| a.starts_with("gate.tx")),
+        "audit has gate actions"
+    );
 
     // --- i18n catalog endpoint (L-10) ---------------------------------------
     let (status, body) = req(&app, "GET", "/v1/i18n/catalog?locale=fa", None, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["rtl"], serde_json::json!(true));
-    assert!(body["entries"]["gate.pass.title"].as_str().unwrap().contains("قبض"));
+    assert!(body["entries"]["gate.pass.title"]
+        .as_str()
+        .unwrap()
+        .contains("قبض"));
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -486,8 +562,9 @@ async fn body_customer(app: &axum::Router) -> String {
         .to_string()
 }
 
-/// Find a seeded container that is still in the yard (has a gate-in time).
-async fn seed_storage_container(app: &axum::Router) -> String {
+/// Find a seeded container that is still in the yard (has a gate-in time),
+/// excluding the container used by the gate flow above (gate-in just now).
+async fn seed_storage_container(app: &axum::Router, exclude: &str) -> String {
     let (_, login) = req(
         app,
         "POST",
@@ -497,10 +574,21 @@ async fn seed_storage_container(app: &axum::Router) -> String {
     )
     .await;
     let token = login["access_token"].as_str().unwrap().to_string();
-    let (status, body) = req(app, "GET", "/v1/yard/containers?state=in_yard&limit=1", Some(&token), None).await;
+    let (status, body) = req(
+        app,
+        "GET",
+        "/v1/yard/containers?state=in_yard&limit=100",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    body["containers"][0]["number"]
-        .as_str()
+    body["containers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["number"].as_str())
+        .find(|n| *n != exclude)
         .expect("seeded in-yard container")
         .to_string()
 }

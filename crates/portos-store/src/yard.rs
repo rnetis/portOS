@@ -10,7 +10,7 @@ use portos_core::container::{
 use portos_core::ids::{BlockId, CustomerId, HoldId, ReadingId, SlotId};
 use portos_core::yard::{BlockSnapshot, YardBlock};
 use portos_core::{CoreError, CoreResult};
-use rusqlite::Row;
+use rusqlite::{OptionalExtension, Row};
 
 fn bad_row(col: &str) -> rusqlite::Error {
     rusqlite::Error::InvalidColumnType(0, col.to_string(), rusqlite::types::Type::Text)
@@ -40,7 +40,10 @@ fn row_to_block(r: &Row<'_>) -> rusqlite::Result<YardBlock> {
 
 pub fn create_block(store: &Store, b: &YardBlock, pre_create_slots: bool) -> CoreResult<u32> {
     on_conn(&store.conn(), |c| {
-        c.execute(
+        // The block and all of its slots must appear atomically: a partial
+        // block would leave holes in the yard plan (F-7).
+        let tx = c.transaction().map_err(map_err)?;
+        tx.execute(
             "INSERT INTO yard_blocks (id, code, name_en, name_fa, block_type, bays, rows, tiers, reefer_plugs, distance_to_quay_m, distance_to_gate_m)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             rusqlite::params![
@@ -53,7 +56,7 @@ pub fn create_block(store: &Store, b: &YardBlock, pre_create_slots: bool) -> Cor
         .map_err(map_err)?;
         let mut count = 0u32;
         if pre_create_slots {
-            let mut stmt = c
+            let mut stmt = tx
                 .prepare("INSERT INTO yard_slots (id, block_id, bay, row, tier, state) VALUES (?1,?2,?3,?4,?5,'free')")
                 .map_err(map_err)?;
             for bay in 0..b.bays {
@@ -61,7 +64,11 @@ pub fn create_block(store: &Store, b: &YardBlock, pre_create_slots: bool) -> Cor
                     for tier in 0..b.tiers {
                         let slot_id = SlotId::generate();
                         stmt.execute(rusqlite::params![
-                            slot_id.to_string(), b.id.to_string(), bay, row, tier
+                            slot_id.to_string(),
+                            b.id.to_string(),
+                            bay,
+                            row,
+                            tier
                         ])
                         .map_err(map_err)?;
                         count += 1;
@@ -69,25 +76,32 @@ pub fn create_block(store: &Store, b: &YardBlock, pre_create_slots: bool) -> Cor
                 }
             }
         }
+        tx.commit().map_err(map_err)?;
         Ok(count)
     })
 }
 
 pub fn list_blocks(store: &Store) -> CoreResult<Vec<YardBlock>> {
     on_conn(&store.conn(), |c| {
-        let mut stmt = c.prepare("SELECT * FROM yard_blocks ORDER BY code").map_err(map_err)?;
+        let mut stmt = c
+            .prepare("SELECT * FROM yard_blocks ORDER BY code")
+            .map_err(map_err)?;
         let rows = stmt.query_map([], row_to_block).map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
 pub fn get_block(store: &Store, id: BlockId) -> CoreResult<YardBlock> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM yard_blocks WHERE id = ?1", [id.to_string()], row_to_block)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("block {id}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM yard_blocks WHERE id = ?1",
+            [id.to_string()],
+            row_to_block,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("block {id}")),
+            _ => map_err(e),
+        })
     })
 }
 
@@ -126,7 +140,12 @@ pub fn occupied_slots(store: &Store, block: BlockId) -> CoreResult<Vec<OccupiedS
         let mut out = Vec::new();
         for r in rows {
             let (bay, row, tier, container) = r.map_err(map_err)?;
-            out.push(OccupiedSlot { bay, row, tier, container });
+            out.push(OccupiedSlot {
+                bay,
+                row,
+                tier,
+                container,
+            });
         }
         Ok(out)
     })
@@ -154,14 +173,21 @@ pub fn occupy_slot(
                 )),
                 _ => map_err(e),
             })?;
-        c.execute(
-            "UPDATE yard_slots SET state = 'occupied', container_id = ?2 WHERE id = ?1 AND state = 'free'",
-            rusqlite::params![slot_id, container.as_str()],
-        )
-        .map_err(map_err)?;
-        Ok(SlotId::from_uuid(
-            uuid::Uuid::parse_str(&slot_id).map_err(|e| CoreError::Internal(format!("slot uuid: {e}")))?,
-        ))
+        let changed = c
+            .execute(
+                "UPDATE yard_slots SET state = 'occupied', container_id = ?2 WHERE id = ?1 AND state = 'free'",
+                rusqlite::params![slot_id, container.as_str()],
+            )
+            .map_err(map_err)?;
+        if changed == 0 {
+            // Another request won the race between SELECT and UPDATE.
+            return Err(CoreError::Conflict(format!(
+                "no free slot at {block}/{bay}/{row}/{tier}"
+            )));
+        }
+        Ok(SlotId::from_uuid(uuid::Uuid::parse_str(&slot_id).map_err(
+            |e| CoreError::Internal(format!("slot uuid: {e}")),
+        )?))
     })
 }
 
@@ -178,7 +204,10 @@ pub fn release_container_slot(store: &Store, container: &ContainerNumber) -> Cor
     })
 }
 
-pub fn find_slot_of_container(store: &Store, container: &ContainerNumber) -> CoreResult<Option<(SlotId, BlockId, u16, u16, u16)>> {
+pub fn find_slot_of_container(
+    store: &Store,
+    container: &ContainerNumber,
+) -> CoreResult<Option<ContainerSlot>> {
     on_conn(&store.conn(), |c| {
         let mut stmt = c
             .prepare(
@@ -193,7 +222,9 @@ pub fn find_slot_of_container(store: &Store, container: &ContainerNumber) -> Cor
                 let block_s: String = r.get(1)?;
                 Ok((
                     SlotId::from_uuid(uuid::Uuid::parse_str(&id_s).map_err(|_| bad_row("id"))?),
-                    BlockId::from_uuid(uuid::Uuid::parse_str(&block_s).map_err(|_| bad_row("block_id"))?),
+                    BlockId::from_uuid(
+                        uuid::Uuid::parse_str(&block_s).map_err(|_| bad_row("block_id"))?,
+                    ),
                     r.get::<_, i64>(2)? as u16,
                     r.get::<_, i64>(3)? as u16,
                     r.get::<_, i64>(4)? as u16,
@@ -207,6 +238,9 @@ pub fn find_slot_of_container(store: &Store, container: &ContainerNumber) -> Cor
     })
 }
 
+/// A container's slot: slot id, block, bay, row, tier.
+pub type ContainerSlot = (SlotId, BlockId, u16, u16, u16);
+
 // --------------------------------------------------------------------------
 // Containers
 // --------------------------------------------------------------------------
@@ -215,7 +249,8 @@ fn row_to_container(r: &Row<'_>) -> rusqlite::Result<Container> {
     let customer: Option<String> = r.get("customer_id")?;
     Ok(Container {
         number: ContainerNumber::parse(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?,
-        size_type: IsoSizeType::parse(&r.get::<_, String>("size_type")?).map_err(|_| bad_row("size_type"))?,
+        size_type: IsoSizeType::parse(&r.get::<_, String>("size_type")?)
+            .map_err(|_| bad_row("size_type"))?,
         weight_kg: r.get::<_, i64>("weight_kg")? as u32,
         imdg_class: r.get("imdg_class")?,
         reefer_setpoint_c: r.get("reefer_setpoint_c")?,
@@ -262,22 +297,35 @@ pub fn upsert_container(store: &Store, ct: &Container) -> CoreResult<()> {
 
 pub fn get_container(store: &Store, number: &ContainerNumber) -> CoreResult<Container> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM containers WHERE id = ?1", [number.as_str()], row_to_container)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("container {number}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM containers WHERE id = ?1",
+            [number.as_str()],
+            row_to_container,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("container {number}"))
+            }
+            _ => map_err(e),
+        })
     })
 }
 
-pub fn list_containers(store: &Store, state: Option<ContainerState>, limit: u32) -> CoreResult<Vec<Container>> {
+pub fn list_containers(
+    store: &Store,
+    state: Option<ContainerState>,
+    limit: u32,
+) -> CoreResult<Vec<Container>> {
     on_conn(&store.conn(), |c| {
         let (sql, param): (&str, Option<String>) = match &state {
             Some(s) => (
                 "SELECT * FROM containers WHERE state = ?1 ORDER BY updated_at DESC LIMIT ?2",
                 Some(crate::util::enum_str(s)),
             ),
-            None => ("SELECT * FROM containers ORDER BY updated_at DESC LIMIT ?1", None),
+            None => (
+                "SELECT * FROM containers ORDER BY updated_at DESC LIMIT ?1",
+                None,
+            ),
         };
         let mut stmt = c.prepare(sql).map_err(map_err)?;
         let rows = if let Some(p) = param {
@@ -286,11 +334,15 @@ pub fn list_containers(store: &Store, state: Option<ContainerState>, limit: u32)
             stmt.query_map([limit], row_to_container)
         }
         .map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
-pub fn set_container_state(store: &Store, number: &ContainerNumber, state: ContainerState) -> CoreResult<()> {
+pub fn set_container_state(
+    store: &Store,
+    number: &ContainerNumber,
+    state: ContainerState,
+) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         c.execute(
             "UPDATE containers SET state = ?2, updated_at = ?3 WHERE id = ?1",
@@ -305,7 +357,11 @@ pub fn set_container_state(store: &Store, number: &ContainerNumber, state: Conta
     })
 }
 
-pub fn set_customs_status(store: &Store, number: &ContainerNumber, status: CustomsStatus) -> CoreResult<()> {
+pub fn set_customs_status(
+    store: &Store,
+    number: &ContainerNumber,
+    status: CustomsStatus,
+) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         c.execute(
             "UPDATE containers SET customs_status = ?2, updated_at = ?3 WHERE id = ?1",
@@ -322,32 +378,49 @@ pub fn set_customs_status(store: &Store, number: &ContainerNumber, status: Custo
 
 pub fn mark_gate_in(store: &Store, number: &ContainerNumber, at: DateTime<Utc>) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
-        c.execute(
-            "UPDATE containers SET gate_in_at = ?2, state = 'in_yard', updated_at = ?3 WHERE id = ?1",
-            rusqlite::params![number.as_str(), ts(at), ts(Utc::now())],
-        )
-        .map_err(map_err)?;
+        let changed = c
+            .execute(
+                "UPDATE containers SET gate_in_at = ?2, state = 'in_yard', updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![number.as_str(), ts(at), ts(Utc::now())],
+            )
+            .map_err(map_err)?;
+        if changed == 0 {
+            return Err(CoreError::NotFound(format!("container {number}")));
+        }
         Ok(())
     })
 }
 
 /// Stored gate-in timestamp of a container (starts storage billing — F-28).
-pub fn gate_in_at(store: &Store, container: &ContainerNumber) -> CoreResult<Option<chrono::DateTime<chrono::Utc>>> {
+pub fn gate_in_at(
+    store: &Store,
+    container: &ContainerNumber,
+) -> CoreResult<Option<chrono::DateTime<chrono::Utc>>> {
     on_conn(&store.conn(), |c| {
         let raw: Option<String> = c
-            .query_row("SELECT gate_in_at FROM containers WHERE id = ?1", [container.as_str()], |r| r.get(0))
+            .query_row(
+                "SELECT gate_in_at FROM containers WHERE id = ?1",
+                [container.as_str()],
+                |r| r.get(0),
+            )
             .map_err(map_err)?;
-        parse_ts_opt(raw).map_err(|_| bad_row("gate_in_at")).map_err(map_err)
+        parse_ts_opt(raw)
+            .map_err(|_| bad_row("gate_in_at"))
+            .map_err(map_err)
     })
 }
 
 pub fn mark_gate_out(store: &Store, number: &ContainerNumber, at: DateTime<Utc>) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
-        c.execute(
-            "UPDATE containers SET gate_out_at = ?2, state = 'gate_out', updated_at = ?3 WHERE id = ?1",
-            rusqlite::params![number.as_str(), ts(at), ts(Utc::now())],
-        )
-        .map_err(map_err)?;
+        let changed = c
+            .execute(
+                "UPDATE containers SET gate_out_at = ?2, state = 'gate_out', updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![number.as_str(), ts(at), ts(Utc::now())],
+            )
+            .map_err(map_err)?;
+        if changed == 0 {
+            return Err(CoreError::NotFound(format!("container {number}")));
+        }
         Ok(())
     })
 }
@@ -383,38 +456,61 @@ pub fn active_holds(store: &Store, container: &ContainerNumber) -> CoreResult<Ve
                 let kind: String = r.get("kind")?;
                 Ok(Hold {
                     id: HoldId::from_uuid(
-                        uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?,
+                        uuid::Uuid::parse_str(&r.get::<_, String>("id")?)
+                            .map_err(|_| bad_row("id"))?,
                     ),
                     container: ContainerNumber::parse(&r.get::<_, String>("container_id")?)
                         .map_err(|_| bad_row("container_id"))?,
-                    kind: serde_json::from_str(&format!("\"{kind}\"")).map_err(|_| bad_row("kind"))?,
+                    kind: serde_json::from_str(&format!("\"{kind}\""))
+                        .map_err(|_| bad_row("kind"))?,
                     reason: r.get("reason")?,
                     placed_by: r.get("placed_by")?,
-                    placed_at: parse_ts(&r.get::<_, String>("placed_at")?).map_err(|_| bad_row("placed_at"))?,
-                    released_at: parse_ts_opt(r.get("released_at")?).map_err(|_| bad_row("released_at"))?,
+                    placed_at: parse_ts(&r.get::<_, String>("placed_at")?)
+                        .map_err(|_| bad_row("placed_at"))?,
+                    released_at: parse_ts_opt(r.get("released_at")?)
+                        .map_err(|_| bad_row("released_at"))?,
                     released_by: r.get("released_by")?,
                 })
             })
             .map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
-pub fn release_hold(store: &Store, hold: HoldId, by: &str) -> CoreResult<bool> {
+/// Release an open hold, returning the container it belonged to so callers
+/// can publish `container.hold_released` (F-11/F-26).
+pub fn release_hold(store: &Store, hold: HoldId, by: &str) -> CoreResult<Option<ContainerNumber>> {
     on_conn(&store.conn(), |c| {
-        let n = c
-            .execute(
-                "UPDATE holds SET released_at = ?2, released_by = ?3 WHERE id = ?1 AND released_at IS NULL",
-                rusqlite::params![hold.to_string(), ts(Utc::now()), by],
+        let tx = c.transaction().map_err(map_err)?;
+        let container: Option<String> = tx
+            .query_row(
+                "SELECT container_id FROM holds WHERE id = ?1 AND released_at IS NULL",
+                [hold.to_string()],
+                |r| r.get(0),
             )
+            .optional()
             .map_err(map_err)?;
-        Ok(n > 0)
+        let Some(container) = container else {
+            return Ok(None);
+        };
+        tx.execute(
+            "UPDATE holds SET released_at = ?2, released_by = ?3 WHERE id = ?1 AND released_at IS NULL",
+            rusqlite::params![hold.to_string(), ts(Utc::now()), by],
+        )
+        .map_err(map_err)?;
+        tx.commit().map_err(map_err)?;
+        let parsed = ContainerNumber::parse(&container)
+            .map_err(|e| CoreError::Internal(format!("stored container id invalid: {e}")))?;
+        Ok(Some(parsed))
     })
 }
 
 // --------------------------------------------------------------------------
 // Reefer readings (F-10)
 // --------------------------------------------------------------------------
+
+/// Container, reading time, temperature and alarm text.
+pub type ReeferAlarm = (ContainerNumber, DateTime<Utc>, f64, String);
 
 pub fn add_reefer_reading(
     store: &Store,
@@ -429,7 +525,14 @@ pub fn add_reefer_reading(
         c.execute(
             "INSERT INTO reefer_readings (id, container_id, at, temperature_c, power_ok, alarm)
              VALUES (?1,?2,?3,?4,?5,?6)",
-            rusqlite::params![id.to_string(), container.as_str(), ts(at), temperature_c, i64::from(power_ok), alarm],
+            rusqlite::params![
+                id.to_string(),
+                container.as_str(),
+                ts(at),
+                temperature_c,
+                i64::from(power_ok),
+                alarm
+            ],
         )
         .map_err(map_err)?;
         Ok(())
@@ -437,7 +540,7 @@ pub fn add_reefer_reading(
     Ok(id)
 }
 
-pub fn reefer_open_alarms(store: &Store, since: DateTime<Utc>) -> CoreResult<Vec<(ContainerNumber, DateTime<Utc>, f64, String)>> {
+pub fn reefer_open_alarms(store: &Store, since: DateTime<Utc>) -> CoreResult<Vec<ReeferAlarm>> {
     on_conn(&store.conn(), |c| {
         let mut stmt = c
             .prepare(
@@ -448,14 +551,15 @@ pub fn reefer_open_alarms(store: &Store, since: DateTime<Utc>) -> CoreResult<Vec
         let rows = stmt
             .query_map([ts(since)], |r| {
                 Ok((
-                    ContainerNumber::parse(&r.get::<_, String>(0)?).map_err(|_| bad_row("container_id"))?,
+                    ContainerNumber::parse(&r.get::<_, String>(0)?)
+                        .map_err(|_| bad_row("container_id"))?,
                     parse_ts(&r.get::<_, String>(1)?).map_err(|_| bad_row("at"))?,
                     r.get::<_, f64>(2)?,
                     r.get::<_, String>(3)?,
                 ))
             })
             .map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
@@ -477,9 +581,13 @@ pub fn record_yard_move(
             "INSERT INTO yard_moves (id, container_id, from_slot, to_slot, reason, at, by)
              VALUES (?1,?2,?3,?4,?5,?6,?7)",
             rusqlite::params![
-                uuid::Uuid::now_v7().to_string(), container.as_str(),
-                from_slot.map(|s| s.to_string()), to_slot.map(|s| s.to_string()),
-                reason, ts(at), by
+                uuid::Uuid::now_v7().to_string(),
+                container.as_str(),
+                from_slot.map(|s| s.to_string()),
+                to_slot.map(|s| s.to_string()),
+                reason,
+                ts(at),
+                by
             ],
         )
         .map_err(map_err)?;
@@ -569,7 +677,9 @@ mod tests {
         let ct = container("MSKU3881107", None, false);
         upsert_container(&store, &ct).unwrap();
         let slot = occupy_slot(&store, block.id, 0, 0, 0, &ct.number).unwrap();
-        assert!(find_slot_of_container(&store, &ct.number).unwrap().is_some());
+        assert!(find_slot_of_container(&store, &ct.number)
+            .unwrap()
+            .is_some());
 
         let snap = block_snapshot(&store, &block).unwrap();
         assert_eq!(snap.occupied, 1);
@@ -610,8 +720,11 @@ mod tests {
         };
         place_hold(&store, &hold).unwrap();
         assert_eq!(active_holds(&store, &ct.number).unwrap().len(), 1);
-        release_hold(&store, hold.id, "customs").unwrap();
+        let released = release_hold(&store, hold.id, "customs").unwrap();
+        assert_eq!(released.as_ref(), Some(&ct.number));
         assert!(active_holds(&store, &ct.number).unwrap().is_empty());
+        // Releasing an already-released hold reports it as gone.
+        assert!(release_hold(&store, hold.id, "customs").unwrap().is_none());
 
         set_customs_status(&store, &ct.number, CustomsStatus::Cleared).unwrap();
         let cleared: i64 = crate::util::on_conn(&store.conn(), |c| {
@@ -625,7 +738,20 @@ mod tests {
         .unwrap();
         assert_eq!(cleared, 1);
 
-        add_reefer_reading(&store, &ct.number, Utc::now(), -15.5, false, Some("temperature above setpoint")).unwrap();
-        assert_eq!(reefer_open_alarms(&store, Utc::now() - chrono::Duration::hours(1)).unwrap().len(), 1);
+        add_reefer_reading(
+            &store,
+            &ct.number,
+            Utc::now(),
+            -15.5,
+            false,
+            Some("temperature above setpoint"),
+        )
+        .unwrap();
+        assert_eq!(
+            reefer_open_alarms(&store, Utc::now() - chrono::Duration::hours(1))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

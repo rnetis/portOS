@@ -26,6 +26,20 @@ impl Clone for Pool {
     }
 }
 
+/// Per-connection pragmas. `journal_mode` is persistent in the database
+/// file, but `foreign_keys`, `busy_timeout` and `synchronous` are
+/// per-connection and must be applied to every pooled connection.
+fn configure_conn(conn: &Connection) -> CoreResult<()> {
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA synchronous = NORMAL;",
+    )
+    .map_err(|e| CoreError::Internal(format!("db configure: {e}")))?;
+    Ok(())
+}
+
 impl Pool {
     /// Open `size` connections to a file-backed database.
     pub fn new(path: &Path, size: usize) -> CoreResult<Pool> {
@@ -33,9 +47,13 @@ impl Pool {
         for i in 0..size.max(1) {
             let conn = Connection::open(path)
                 .map_err(|e| CoreError::Internal(format!("open db conn {i}: {e}")))?;
+            configure_conn(&conn)?;
             conns.push(Arc::new(Mutex::new(conn)));
         }
-        Ok(Pool { conns, counter: AtomicUsize::new(0) })
+        Ok(Pool {
+            conns,
+            counter: AtomicUsize::new(0),
+        })
     }
 
     /// Pool over one shared in-memory database (tests only).
@@ -52,9 +70,13 @@ impl Pool {
         for _ in 0..size.max(1) {
             let conn = Connection::open_with_flags(uri.as_str(), flags)
                 .map_err(|e| CoreError::Internal(format!("open mem db: {e}")))?;
+            configure_conn(&conn)?;
             conns.push(Arc::new(Mutex::new(conn)));
         }
-        Ok(Pool { conns, counter: AtomicUsize::new(0) })
+        Ok(Pool {
+            conns,
+            counter: AtomicUsize::new(0),
+        })
     }
 
     /// Round-robin checkout. The returned guard is shared; SQLite handles

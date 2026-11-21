@@ -46,11 +46,14 @@ impl Metrics {
 
     pub fn observe(&self, name: &str, value: f64) {
         if let Ok(mut g) = self.inner.lock() {
-            let h = g.histograms.entry(name.to_string()).or_insert_with(|| Histogram {
-                buckets: DEFAULT_BUCKETS.iter().map(|b| (*b, 0)).collect(),
-                count: 0,
-                sum: 0.0,
-            });
+            let h = g
+                .histograms
+                .entry(name.to_string())
+                .or_insert_with(|| Histogram {
+                    buckets: DEFAULT_BUCKETS.iter().map(|b| (*b, 0)).collect(),
+                    count: 0,
+                    sum: 0.0,
+                });
             h.count += 1;
             h.sum += value;
             for (bound, count) in h.buckets.iter_mut() {
@@ -96,8 +99,7 @@ impl Metrics {
 }
 
 /// Global metrics handle (avoids threading through every layer).
-pub static METRICS: std::sync::LazyLock<Metrics> =
-    std::sync::LazyLock::new(Metrics::default);
+pub static METRICS: std::sync::LazyLock<Metrics> = std::sync::LazyLock::new(Metrics::default);
 
 #[cfg(test)]
 mod tests {

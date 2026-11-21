@@ -44,7 +44,14 @@ pub struct Una {
 
 impl Default for Una {
     fn default() -> Self {
-        Self { comp: ':', elem: '+', decimal: '.', release: '?', repetition: '*', seg_term: '\'' }
+        Self {
+            comp: ':',
+            elem: '+',
+            decimal: '.',
+            release: '?',
+            repetition: '*',
+            seg_term: '\'',
+        }
     }
 }
 
@@ -68,7 +75,11 @@ impl Una {
 
 impl fmt::Display for Una {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "UNA{}{}{}{}{}{}", self.comp, self.elem, self.decimal, self.release, self.repetition, self.seg_term)
+        write!(
+            f,
+            "UNA{}{}{}{}{}{}",
+            self.comp, self.elem, self.decimal, self.release, self.repetition, self.seg_term
+        )
     }
 }
 
@@ -94,7 +105,10 @@ impl Segment {
     /// Component `comp` of element `idx`.
     #[must_use]
     pub fn comp(&self, idx: usize, comp: usize) -> Option<&str> {
-        self.elements.get(idx).and_then(|e| e.get(comp)).map(String::as_str)
+        self.elements
+            .get(idx)
+            .and_then(|e| e.get(comp))
+            .map(String::as_str)
     }
 
     /// Element `idx` as components list.
@@ -221,7 +235,11 @@ impl Interchange {
                 .and_then(|e| e.first())
                 .cloned()
                 .unwrap_or_default();
-            if tag.is_empty() || !tag.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
+            if tag.is_empty()
+                || !tag
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            {
                 return Err(EdiError::InvalidTag(0));
             }
             let elements = if elems.len() > 1 {
@@ -293,7 +311,16 @@ pub mod envelope {
     /// `UNB+UNOC:3+SENDER:ZZZ+RECIPIENT:ZZZ+YYMMDD:HHMM+REF'`
     #[must_use]
     pub fn unb(sender: &str, recipient: &str, now: &str, ref_no: &str) -> Segment {
-        Segment::build("UNB", &[&["UNOC", "3"], &[sender, "ZZZ"], &[recipient, "ZZZ"], &now.split(':').collect::<Vec<_>>(), &[ref_no]])
+        Segment::build(
+            "UNB",
+            &[
+                &["UNOC", "3"],
+                &[sender, "ZZZ"],
+                &[recipient, "ZZZ"],
+                &now.split(':').collect::<Vec<_>>(),
+                &[ref_no],
+            ],
+        )
     }
 
     /// `UNZ+<count>+<ref>'`
@@ -305,10 +332,7 @@ pub mod envelope {
     /// `UNH+<ref>+<type>:D:96A:UN'`
     #[must_use]
     pub fn unh(ref_no: &str, message_type: &str) -> Segment {
-        Segment::build(
-            "UNH",
-            &[&[ref_no], &[message_type, "D", "96A", "UN"]],
-        )
+        Segment::build("UNH", &[&[ref_no], &[message_type, "D", "96A", "UN"]])
     }
 
     /// `UNT+<count>+<ref>'`
@@ -352,9 +376,15 @@ mod tests {
 
     #[test]
     fn round_trip_segments() {
-        let seg = Segment::build("NAD", &[&["CZ"], &["SHAHID RAJAEE TERMINAL", "160"], &["28", "3"]]);
+        let seg = Segment::build(
+            "NAD",
+            &[&["CZ"], &["SHAHID RAJAEE TERMINAL", "160"], &["28", "3"]],
+        );
         let s = seg.serialize(&Una::default());
-        assert!(s.starts_with("NAD+CZ+SHAHID RAJAEE TERMINAL:160+28:3'"), "{s}");
+        assert!(
+            s.starts_with("NAD+CZ+SHAHID RAJAEE TERMINAL:160+28:3'"),
+            "{s}"
+        );
     }
 
     #[test]
@@ -365,7 +395,8 @@ mod tests {
 
     #[test]
     fn decimal_notation_default_recorded() {
-        let ic = Interchange::parse("UNA:+.? 'UNB+UNOC:3+A:ZZZ+B:ZZZ+261121:0900+1'UNZ+1+1'").unwrap();
+        let ic =
+            Interchange::parse("UNA:+.? 'UNB+UNOC:3+A:ZZZ+B:ZZZ+261121:0900+1'UNZ+1+1'").unwrap();
         assert_eq!(ic.una.decimal, '.');
     }
 }

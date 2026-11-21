@@ -96,17 +96,30 @@ impl BaplieMessage {
                     if let Some(e) = cur.take() {
                         msg.entries.push(e);
                     }
-                    let number = seg.el(1).ok_or(EdiError::MissingElement("container number", "EQD"))?;
+                    let number = seg
+                        .el(1)
+                        .ok_or(EdiError::MissingElement("container number", "EQD"))?;
                     let container = ContainerNumber::parse(number)
                         .map_err(|_| EdiError::InvalidValue(number.to_string(), "EQD container"))?;
                     let size_type = seg
                         .el(2)
                         .map(IsoSizeType::parse)
                         .transpose()
-                        .map_err(|_| EdiError::InvalidValue(seg.el(2).unwrap_or_default().into(), "EQD size/type"))?
+                        .map_err(|_| {
+                            EdiError::InvalidValue(
+                                seg.el(2).unwrap_or_default().into(),
+                                "EQD size/type",
+                            )
+                        })?
                         .unwrap_or(IsoSizeType::parse("22G1").unwrap());
                     let full = seg.el(3).map(|s| s != "6").unwrap_or(true);
-                    cur = Some(BaplieEntry { container, size_type, full, weight_kg: None, position: None });
+                    cur = Some(BaplieEntry {
+                        container,
+                        size_type,
+                        full,
+                        weight_kg: None,
+                        position: None,
+                    });
                 }
                 "MEA" if seg.el(0) == Some("WT") => {
                     if let Some(e) = cur.as_mut() {
@@ -139,12 +152,24 @@ impl BaplieMessage {
 
     #[must_use]
     pub fn emit(&self, sender: &str, recipient: &str, now: DateTime<Utc>) -> String {
-        let mut segs = vec![envelope::unb(sender, recipient, &dt::emit_203(now), &self.message_ref)];
+        let mut segs = vec![envelope::unb(
+            sender,
+            recipient,
+            &dt::emit_203(now),
+            &self.message_ref,
+        )];
         segs.push(envelope::unh(&self.message_ref, "BAPLIE"));
         if let (Some(v), Some(voy)) = (&self.vessel_name, &self.voyage) {
             segs.push(Segment::build(
                 "TDT",
-                &[&["20"], &[voy.as_str()], &[], &[], &["SEA", "172", "20"], &[v.as_str(), "146", "20"]],
+                &[
+                    &["20"],
+                    &[voy.as_str()],
+                    &[],
+                    &[],
+                    &["SEA", "172", "20"],
+                    &[v.as_str(), "146", "20"],
+                ],
             ));
         }
         if let Some(p) = &self.port {
@@ -154,7 +179,12 @@ impl BaplieMessage {
             let full_code = if e.full { "5" } else { "6" };
             segs.push(Segment::build(
                 "EQD",
-                &[&["CN"], &[e.container.as_str()], &[e.size_type.as_str()], &[full_code]],
+                &[
+                    &["CN"],
+                    &[e.container.as_str()],
+                    &[e.size_type.as_str()],
+                    &[full_code],
+                ],
             ));
             if let Some(w) = e.weight_kg {
                 let wstr = w.to_string();
@@ -168,7 +198,11 @@ impl BaplieMessage {
         let count = segs.len() + 1;
         segs.push(envelope::unt(count, &self.message_ref));
         segs.push(envelope::unz(1, &self.message_ref));
-        Interchange { una: crate::syntax::Una::default(), segments: segs }.serialize()
+        Interchange {
+            una: crate::syntax::Una::default(),
+            segments: segs,
+        }
+        .serialize()
     }
 }
 
@@ -179,7 +213,14 @@ mod tests {
     #[test]
     fn parses_position_triple() {
         let p = StowPosition::parse_triple("0000102:0000401:0000502").unwrap();
-        assert_eq!(p, StowPosition { bay: 102, row: 401, tier: 502 });
+        assert_eq!(
+            p,
+            StowPosition {
+                bay: 102,
+                row: 401,
+                tier: 502
+            }
+        );
         assert_eq!(p.to_triple(), "0000102:0000401:0000502");
         assert!(StowPosition::parse_triple("bad").is_err());
     }
@@ -202,7 +243,14 @@ mod tests {
         let msg = BaplieMessage::parse(&ic).unwrap();
         assert_eq!(msg.vessel_name.as_deref(), Some("GULF PEARL"));
         assert_eq!(msg.entries.len(), 2);
-        assert_eq!(msg.entries[0].position.unwrap(), StowPosition { bay: 102, row: 401, tier: 502 });
+        assert_eq!(
+            msg.entries[0].position.unwrap(),
+            StowPosition {
+                bay: 102,
+                row: 401,
+                tier: 502
+            }
+        );
         assert!(!msg.entries[1].full);
 
         let emitted = msg.emit("LINE:ZZZ", "IRBNDCT:ZZZ", Utc::now());

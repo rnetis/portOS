@@ -29,7 +29,10 @@ pub fn map_err(e: rusqlite::Error) -> CoreError {
     if matches!(
         e,
         rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error { code: rusqlite::ffi::ErrorCode::ConstraintViolation, .. },
+            rusqlite::ffi::Error {
+                code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                ..
+            },
             _,
         )
     ) {

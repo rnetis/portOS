@@ -15,12 +15,24 @@ pub async fn healthz() -> impl IntoResponse {
 
 /// Readiness: migrations applied, event bus alive — for orchestrators (§6.2).
 pub async fn readyz(State(state): State<AppState>) -> Response {
-    let ready = state.is_ready();
-    let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    // Readiness must reflect the database too: a process that cannot serve
+    // queries should be taken out of the load-balancer pool (§6.2).
+    let store = state.store.clone();
+    let db_ok = tokio::task::spawn_blocking(move || store.ping())
+        .await
+        .map(|r| r.is_ok())
+        .unwrap_or(false);
+    let ready = state.is_ready() && db_ok;
+    let status = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
     (
         status,
         Json(serde_json::json!({
             "status": if ready { "ready" } else { "starting" },
+            "database": if db_ok { "ok" } else { "unavailable" },
             "uptime_secs": state.uptime_secs(),
         })),
     )
@@ -41,7 +53,10 @@ pub async fn metrics() -> Response {
     let body = crate::metrics::METRICS.render();
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
         body,
     )
         .into_response()

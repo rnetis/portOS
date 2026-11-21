@@ -49,57 +49,75 @@ define_id!(
     /// (shipping line, agent, forwarder, trucking company, customs…).
     CustomerId
 );
-define_id!(/// A vessel registered in master data (PRD F-47).
+define_id!(
+    /// A vessel registered in master data (PRD F-47).
     VesselId
 );
-define_id!(/// A vessel call / port visit (PRD F-1).
+define_id!(
+    /// A vessel call / port visit (PRD F-1).
     CallId
 );
-define_id!(/// A berth along the quay.
+define_id!(
+    /// A berth along the quay.
     BerthId
 );
-define_id!(/// A berth allocation decision (PRD F-2).
+define_id!(
+    /// A berth allocation decision (PRD F-2).
     AllocationId
 );
-define_id!(/// A yard block (stack area).
+define_id!(
+    /// A yard block (stack area).
     BlockId
 );
-define_id!(/// A single yard slot position (bay/row/tier).
+define_id!(
+    /// A single yard slot position (bay/row/tier).
     SlotId
 );
-define_id!(/// A truck appointment time slot (PRD F-17).
+define_id!(
+    /// A truck appointment time slot (PRD F-17).
     AppointmentId
 );
-define_id!(/// A gate transaction (PRD F-18).
+define_id!(
+    /// A gate transaction (PRD F-18).
     GateTxId
 );
-define_id!(/// A tariff definition (PRD F-27).
+define_id!(
+    /// A tariff definition (PRD F-27).
     TariffId
 );
-define_id!(/// An invoice (PRD F-29).
+define_id!(
+    /// An invoice (PRD F-29).
     InvoiceId
 );
-define_id!(/// A user account.
+define_id!(
+    /// A user account.
     UserId
 );
-define_id!(/// A work job (discharge/load/shift) dispatched to equipment (PRD F-13).
+define_id!(
+    /// A work job (discharge/load/shift) dispatched to equipment (PRD F-13).
     JobId
 );
-define_id!(/// A recorded physical move.
+define_id!(
+    /// A recorded physical move.
     MoveId
 );
-define_id!(/// A piece of terminal equipment.
+define_id!(
+    /// A piece of terminal equipment.
     EquipmentId
 );
-define_id!(/// A customs/security/line hold (PRD F-11).
+define_id!(
+    /// A customs/security/line hold (PRD F-11).
     HoldId
 );
-define_id!(/// A reefer telemetry reading (PRD F-10).
+define_id!(
+    /// A reefer telemetry reading (PRD F-10).
     ReadingId
 );
-define_id!(/// A safety incident report (PRD F-38).
+define_id!(
+    /// A safety incident report (PRD F-38).
     IncidentId
 );
-define_id!(/// An outbound webhook subscription (PRD I-1).
+define_id!(
+    /// An outbound webhook subscription (PRD I-1).
     WebhookId
 );

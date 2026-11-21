@@ -129,10 +129,7 @@ pub struct MoveRecord {
 /// Pick the next queued job + an available compatible piece of equipment.
 /// Simple deterministic priority-FIFO dispatch (autonomous/AGV support
 /// comes from the same interface in Phase 3 — F-13).
-pub fn dispatch_next(
-    jobs: &[Job],
-    equipment: &[Equipment],
-) -> Option<(JobId, EquipmentId)> {
+pub fn dispatch_next(jobs: &[Job], equipment: &[Equipment]) -> Option<(JobId, EquipmentId)> {
     let mut queued: Vec<&Job> = jobs
         .iter()
         .filter(|j| j.status == JobStatus::Queued)
@@ -144,8 +141,7 @@ pub fn dispatch_next(
     });
     let job = queued.first()?;
     let equip = equipment.iter().find(|e| {
-        e.status == EquipmentStatus::Available
-            && job.kind.compatible_kinds().contains(&e.kind)
+        e.status == EquipmentStatus::Available && job.kind.compatible_kinds().contains(&e.kind)
     })?;
     Some((job.id, equip.id))
 }
@@ -156,6 +152,9 @@ pub fn transition_job(current: JobStatus, next: JobStatus) -> CoreResult<JobStat
     let ok = matches!(
         (current, next),
         (Queued, Assigned)
+            // Dispatching a queued job hands it straight to the operator and
+            // starts work in one step (F-13/F-14).
+            | (Queued, InProgress)
             | (Assigned, InProgress)
             | (Assigned, Cancelled)
             | (InProgress, Done)
@@ -206,8 +205,16 @@ mod tests {
 
     #[test]
     fn dispatches_priority_first_to_compatible_equipment() {
-        let qc1 = eq("QC-01", EquipmentKind::QuayCrane, EquipmentStatus::Available);
-        let sc1 = eq("SC-01", EquipmentKind::StraddleCarrier, EquipmentStatus::Available);
+        let qc1 = eq(
+            "QC-01",
+            EquipmentKind::QuayCrane,
+            EquipmentStatus::Available,
+        );
+        let sc1 = eq(
+            "SC-01",
+            EquipmentKind::StraddleCarrier,
+            EquipmentStatus::Available,
+        );
         let sc_id = sc1.id;
         let jobs = vec![job(JobKind::Discharge, 5), job(JobKind::Shift, 1)];
         let (jid, eid) = dispatch_next(&jobs, &[qc1, sc1]).unwrap();
@@ -218,7 +225,11 @@ mod tests {
     #[test]
     fn no_dispatch_when_busy_or_incompatible() {
         let qc_busy = eq("QC-01", EquipmentKind::QuayCrane, EquipmentStatus::Busy);
-        let sc1 = eq("SC-01", EquipmentKind::StraddleCarrier, EquipmentStatus::Available);
+        let sc1 = eq(
+            "SC-01",
+            EquipmentKind::StraddleCarrier,
+            EquipmentStatus::Available,
+        );
         let jobs = vec![job(JobKind::Discharge, 1)];
         assert!(dispatch_next(&jobs, &[qc_busy, sc1]).is_none());
     }
@@ -226,7 +237,8 @@ mod tests {
     #[test]
     fn job_transitions_guarded() {
         assert!(transition_job(JobStatus::Queued, JobStatus::Assigned).is_ok());
-        assert!(transition_job(JobStatus::Queued, JobStatus::InProgress).is_err());
+        assert!(transition_job(JobStatus::Queued, JobStatus::InProgress).is_ok());
+        assert!(transition_job(JobStatus::Done, JobStatus::InProgress).is_err());
         assert!(transition_job(JobStatus::InProgress, JobStatus::Done).is_ok());
         assert!(transition_job(JobStatus::Done, JobStatus::Queued).is_err());
     }

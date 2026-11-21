@@ -5,7 +5,9 @@ use crate::util::{map_err, on_conn, parse_ts, ts};
 use crate::Store;
 use chrono::Utc;
 
-use portos_core::billing::{ChargeLine, ChargeRef, Invoice, InvoiceStatus, Tariff, TariffBasis, Tier};
+use portos_core::billing::{
+    ChargeLine, ChargeRef, Invoice, InvoiceStatus, Tariff, TariffBasis, Tier,
+};
 use portos_core::ids::{CallId, CustomerId, InvoiceId, TariffId};
 use portos_core::money::{Currency, FxEntry, FxTable};
 use portos_core::{CoreError, CoreResult};
@@ -39,7 +41,8 @@ fn row_to_customer(r: &Row<'_>) -> rusqlite::Result<CustomerRow> {
         name_fa: r.get("name_fa")?,
         kind: r.get("kind")?,
         credit_limit_minor: r.get("credit_limit_minor")?,
-        currency: Currency::parse(&r.get::<_, String>("currency")?).map_err(|_| bad_row("currency"))?,
+        currency: Currency::parse(&r.get::<_, String>("currency")?)
+            .map_err(|_| bad_row("currency"))?,
         active: r.get::<_, i64>("active")? != 0,
     })
 }
@@ -61,19 +64,25 @@ pub fn create_customer(store: &Store, c: &CustomerRow) -> CoreResult<()> {
 
 pub fn get_customer(store: &Store, id: CustomerId) -> CoreResult<CustomerRow> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT * FROM customers WHERE id = ?1", [id.to_string()], row_to_customer)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("customer {id}")),
-                _ => map_err(e),
-            })
+        c.query_row(
+            "SELECT * FROM customers WHERE id = ?1",
+            [id.to_string()],
+            row_to_customer,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("customer {id}")),
+            _ => map_err(e),
+        })
     })
 }
 
 pub fn list_customers(store: &Store) -> CoreResult<Vec<CustomerRow>> {
     on_conn(&store.conn(), |c| {
-        let mut stmt = c.prepare("SELECT * FROM customers ORDER BY name_en").map_err(map_err)?;
+        let mut stmt = c
+            .prepare("SELECT * FROM customers ORDER BY name_en")
+            .map_err(map_err)?;
         let rows = stmt.query_map([], row_to_customer).map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
@@ -86,17 +95,22 @@ fn row_to_tariff(r: &Row<'_>) -> rusqlite::Result<Tariff> {
     let tiers_json: String = r.get("tiers")?;
     let customer: Option<String> = r.get("customer_id")?;
     Ok(Tariff {
-        id: TariffId::from_uuid(uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?),
+        id: TariffId::from_uuid(
+            uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?,
+        ),
         code: r.get("code")?,
         name_en: r.get("name_en")?,
         name_fa: r.get("name_fa")?,
-        basis: serde_json::from_str::<TariffBasis>(&format!("\"{basis}\"")).map_err(|_| bad_row("basis"))?,
-        currency: Currency::parse(&r.get::<_, String>("currency")?).map_err(|_| bad_row("currency"))?,
+        basis: serde_json::from_str::<TariffBasis>(&format!("\"{basis}\""))
+            .map_err(|_| bad_row("basis"))?,
+        currency: Currency::parse(&r.get::<_, String>("currency")?)
+            .map_err(|_| bad_row("currency"))?,
         unit_minor: r.get("unit_minor")?,
         free_days: r.get::<_, i64>("free_days")? as u32,
         tiers: serde_json::from_str::<Vec<Tier>>(&tiers_json).unwrap_or_default(),
         tax_rate: r.get("tax_rate")?,
-        customer: customer.map(|s| CustomerId::from_uuid(uuid::Uuid::parse_str(&s).unwrap_or_default())),
+        customer: customer
+            .map(|s| CustomerId::from_uuid(uuid::Uuid::parse_str(&s).unwrap_or_default())),
         active: r.get::<_, i64>("active")? != 0,
     })
 }
@@ -125,18 +139,20 @@ pub fn upsert_tariff(store: &Store, t: &Tariff) -> CoreResult<()> {
 
 pub fn list_tariffs(store: &Store, customer: Option<CustomerId>) -> CoreResult<Vec<Tariff>> {
     on_conn(&store.conn(), |c| {
-        let mut stmt = c.prepare("SELECT * FROM tariffs WHERE active = 1 ORDER BY code").map_err(map_err)?;
+        let mut stmt = c
+            .prepare("SELECT * FROM tariffs WHERE active = 1 ORDER BY code")
+            .map_err(map_err)?;
         let rows = stmt.query_map([], row_to_tariff).map_err(map_err)?;
-        let all: Vec<Tariff> = rows.filter_map(|r| r.ok()).collect();
+        let all: Vec<Tariff> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_err)?;
         // Contract-specific tariffs win over public ones for the same code.
         Ok(all
             .into_iter()
-            .filter(|t| {
-                match (t.customer, customer) {
-                    (Some(tc), Some(qc)) => tc == qc,
-                    (Some(_), None) => false,
-                    (None, _) => true,
-                }
+            .filter(|t| match (t.customer, customer) {
+                (Some(tc), Some(qc)) => tc == qc,
+                (Some(_), None) => false,
+                (None, _) => true,
             })
             .collect())
     })
@@ -160,12 +176,15 @@ pub fn upsert_fx(store: &Store, e: &FxEntry) -> CoreResult<()> {
 
 pub fn load_fx_table(store: &Store) -> CoreResult<FxTable> {
     on_conn(&store.conn(), |c| {
-        let mut stmt = c.prepare("SELECT base, quote, rate, as_of, source FROM fx_rates").map_err(map_err)?;
+        let mut stmt = c
+            .prepare("SELECT base, quote, rate, as_of, source FROM fx_rates")
+            .map_err(map_err)?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(FxEntry {
                     base: Currency::parse(&r.get::<_, String>(0)?).map_err(|_| bad_row("base"))?,
-                    quote: Currency::parse(&r.get::<_, String>(1)?).map_err(|_| bad_row("quote"))?,
+                    quote: Currency::parse(&r.get::<_, String>(1)?)
+                        .map_err(|_| bad_row("quote"))?,
                     rate: r.get(2)?,
                     as_of: parse_ts(&r.get::<_, String>(3)?).map_err(|_| bad_row("as_of"))?,
                     source: r.get(4)?,
@@ -188,10 +207,13 @@ fn row_to_invoice(r: &Row<'_>) -> rusqlite::Result<Invoice> {
     let status: String = r.get("status")?;
     let currency: String = r.get("currency")?;
     Ok(Invoice {
-        id: InvoiceId::from_uuid(uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?),
+        id: InvoiceId::from_uuid(
+            uuid::Uuid::parse_str(&r.get::<_, String>("id")?).map_err(|_| bad_row("id"))?,
+        ),
         number: r.get("number")?,
         customer: CustomerId::from_uuid(
-            uuid::Uuid::parse_str(&r.get::<_, String>("customer_id")?).map_err(|_| bad_row("customer_id"))?,
+            uuid::Uuid::parse_str(&r.get::<_, String>("customer_id")?)
+                .map_err(|_| bad_row("customer_id"))?,
         ),
         currency: Currency::parse(&currency).map_err(|_| bad_row("currency"))?,
         status: serde_json::from_str(&format!("\"{status}\"")).map_err(|_| bad_row("status"))?,
@@ -206,11 +228,7 @@ fn row_to_invoice(r: &Row<'_>) -> rusqlite::Result<Invoice> {
 }
 
 /// Create the invoice header and its lines in one transaction.
-pub fn create_invoice(
-    store: &Store,
-    invoice: &Invoice,
-    lines: &[ChargeLine],
-) -> CoreResult<()> {
+pub fn create_invoice(store: &Store, invoice: &Invoice, lines: &[ChargeLine]) -> CoreResult<()> {
     on_conn(&store.conn(), |c| {
         let tx = c.transaction().map_err(map_err)?;
         tx.execute(
@@ -232,15 +250,25 @@ pub fn create_invoice(
                 .map_err(map_err)?;
             for line in lines {
                 let (ref_type, ref_id): (&str, String) = match &line.charge_ref {
-                    ChargeRef::Container { container } => ("container", container.as_str().to_string()),
+                    ChargeRef::Container { container } => {
+                        ("container", container.as_str().to_string())
+                    }
                     ChargeRef::VesselCall { call } => ("vessel_call", call.to_string()),
                     ChargeRef::Unspecified { label } => ("unspecified", label.clone()),
                 };
                 stmt.execute(rusqlite::params![
-                    uuid::Uuid::now_v7().to_string(), invoice.id.to_string(),
-                    line.tariff_code, line.description_en, line.description_fa,
-                    ref_type, ref_id, line.quantity, line.unit_minor,
-                    line.amount.minor, line.tax_rate, line.tax_minor
+                    uuid::Uuid::now_v7().to_string(),
+                    invoice.id.to_string(),
+                    line.tariff_code,
+                    line.description_en,
+                    line.description_fa,
+                    ref_type,
+                    ref_id,
+                    line.quantity,
+                    line.unit_minor,
+                    line.amount.minor,
+                    line.tax_rate,
+                    line.tax_minor
                 ])
                 .map_err(map_err)?;
             }
@@ -253,15 +281,21 @@ pub fn create_invoice(
 pub fn get_invoice(store: &Store, number: &str) -> CoreResult<(Invoice, Vec<ChargeLine>)> {
     on_conn(&store.conn(), |c| {
         let invoice = c
-            .query_row("SELECT * FROM invoices WHERE number = ?1", [number], row_to_invoice)
+            .query_row(
+                "SELECT * FROM invoices WHERE number = ?1",
+                [number],
+                row_to_invoice,
+            )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("invoice {number}")),
+                rusqlite::Error::QueryReturnedNoRows => {
+                    CoreError::NotFound(format!("invoice {number}"))
+                }
                 _ => map_err(e),
             })?;
         // Raw rows are mapped outside the query closure so the invoice
         // currency is available.
         let mut stmt = c
-            .prepare("SELECT tariff_code, description_en, description_fa, ref_id, quantity, unit_minor, amount_minor, tax_rate, tax_minor
+            .prepare("SELECT tariff_code, description_en, description_fa, ref_type, ref_id, quantity, unit_minor, amount_minor, tax_rate, tax_minor
                       FROM invoice_lines WHERE invoice_id = ?1")
             .map_err(map_err)?;
         let raw = stmt
@@ -271,23 +305,39 @@ pub fn get_invoice(store: &Store, number: &str) -> CoreResult<(Invoice, Vec<Char
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
-                    r.get::<_, f64>(4)?,
-                    r.get::<_, i64>(5)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, f64>(5)?,
                     r.get::<_, i64>(6)?,
-                    r.get::<_, f64>(7)?,
-                    r.get::<_, i64>(8)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, f64>(8)?,
+                    r.get::<_, i64>(9)?,
                 ))
             })
             .map_err(map_err)?;
         let mut lines = Vec::new();
         for row in raw {
-            let (code, en, fa, ref_id, quantity, unit, amount_minor, tax_rate, tax_minor) =
+            let (code, en, fa, ref_type, ref_id, quantity, unit, amount_minor, tax_rate, tax_minor) =
                 row.map_err(map_err)?;
+            // Preserve what the charge refers to instead of collapsing every
+            // reference to an opaque label (F-28/F-29).
+            let charge_ref = match ref_type.as_str() {
+                "container" => ChargeRef::Container {
+                    container: portos_core::container::ContainerNumber::parse(&ref_id)
+                        .map_err(|e| CoreError::Internal(format!("stored line ref: {e}")))?,
+                },
+                "vessel_call" => ChargeRef::VesselCall {
+                    call: CallId::from_uuid(
+                        uuid::Uuid::parse_str(&ref_id)
+                            .map_err(|e| CoreError::Internal(format!("stored line ref: {e}")))?,
+                    ),
+                },
+                _ => ChargeRef::Unspecified { label: ref_id },
+            };
             lines.push(ChargeLine {
                 tariff_code: code,
                 description_en: en,
                 description_fa: fa,
-                charge_ref: ChargeRef::Unspecified { label: ref_id },
+                charge_ref,
                 quantity,
                 unit_minor: unit,
                 amount: portos_core::money::Money::new(amount_minor, invoice.currency),
@@ -299,7 +349,10 @@ pub fn get_invoice(store: &Store, number: &str) -> CoreResult<(Invoice, Vec<Char
     })
 }
 
-pub fn list_invoices_for_customer(store: &Store, customer: Option<CustomerId>) -> CoreResult<Vec<Invoice>> {
+pub fn list_invoices_for_customer(
+    store: &Store,
+    customer: Option<CustomerId>,
+) -> CoreResult<Vec<Invoice>> {
     on_conn(&store.conn(), |c| {
         let (sql, param): (&str, Option<String>) = match customer {
             Some(id) => (
@@ -314,7 +367,7 @@ pub fn list_invoices_for_customer(store: &Store, customer: Option<CustomerId>) -
             None => stmt.query_map([], row_to_invoice),
         }
         .map_err(map_err)?;
-        rows.filter_map(|r| r.ok()).map(Ok).collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     })
 }
 
@@ -328,12 +381,38 @@ pub fn record_payment(
     on_conn(&store.conn(), |c| {
         let tx = c.transaction().map_err(map_err)?;
         let inv = tx
-            .query_row("SELECT * FROM invoices WHERE number = ?1", [number], row_to_invoice)
+            .query_row(
+                "SELECT * FROM invoices WHERE number = ?1",
+                [number],
+                row_to_invoice,
+            )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::NotFound(format!("invoice {number}")),
+                rusqlite::Error::QueryReturnedNoRows => {
+                    CoreError::NotFound(format!("invoice {number}"))
+                }
                 _ => map_err(e),
             })?;
+        if amount_minor <= 0 {
+            return Err(CoreError::Validation(
+                "payment amount must be positive".into(),
+            ));
+        }
+        match inv.status {
+            InvoiceStatus::Issued | InvoiceStatus::PartiallyPaid | InvoiceStatus::Disputed => {}
+            other => {
+                return Err(CoreError::Validation(format!(
+                    "invoice {number} is {} and cannot take payments",
+                    crate::util::enum_str(&other)
+                )))
+            }
+        }
         let paid = inv.paid_minor + amount_minor;
+        if paid > inv.total_minor {
+            return Err(CoreError::Validation(format!(
+                "payment of {amount_minor} exceeds outstanding balance of {}",
+                inv.total_minor - inv.paid_minor
+            )));
+        }
         let status: InvoiceStatus = if paid >= inv.total_minor {
             InvoiceStatus::Paid
         } else {
@@ -349,14 +428,15 @@ pub fn record_payment(
         .map_err(map_err)?;
         tx.execute(
             "UPDATE invoices SET paid_minor = ?2, status = ?3 WHERE id = ?1",
-            rusqlite::params![
-                inv.id.to_string(), paid,
-                crate::util::enum_str(&status)
-            ],
+            rusqlite::params![inv.id.to_string(), paid, crate::util::enum_str(&status)],
         )
         .map_err(map_err)?;
         tx.commit().map_err(map_err)?;
-        Ok(Invoice { paid_minor: paid, status, ..inv })
+        Ok(Invoice {
+            paid_minor: paid,
+            status,
+            ..inv
+        })
     })
 }
 
@@ -374,7 +454,8 @@ pub fn outstanding_minor_for_customer(store: &Store, customer: CustomerId) -> Co
 
 pub fn next_invoice_seq(store: &Store) -> CoreResult<i64> {
     on_conn(&store.conn(), |c| {
-        c.query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0)).map_err(map_err)
+        c.query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0))
+            .map_err(map_err)
     })
 }
 
@@ -432,13 +513,16 @@ mod tests {
         let applicable = list_tariffs(&store, Some(customer.id)).unwrap();
         assert!(applicable.iter().any(|t| t.customer == Some(customer.id)));
 
-        upsert_fx(&store, &FxEntry {
-            base: Currency::USD,
-            quote: Currency::IRR,
-            rate: 100_000.0,
-            as_of: Utc::now(),
-            source: "demo".into(),
-        })
+        upsert_fx(
+            &store,
+            &FxEntry {
+                base: Currency::USD,
+                quote: Currency::IRR,
+                rate: 100_000.0,
+                as_of: Utc::now(),
+                source: "demo".into(),
+            },
+        )
         .unwrap();
         let fx = load_fx_table(&store).unwrap();
         assert!(fx.get(Currency::USD, Currency::IRR).is_some());
@@ -447,7 +531,9 @@ mod tests {
             tariff_code: "STORAGE-IMP".into(),
             description_en: "storage 6 days".into(),
             description_fa: "انبارش ۶ روز".into(),
-            charge_ref: ChargeRef::Unspecified { label: "batch".into() },
+            charge_ref: ChargeRef::Unspecified {
+                label: "batch".into(),
+            },
             quantity: 6.0,
             unit_minor: 850_000,
             amount: portos_core::money::Money::new(5_100_000, Currency::IRR),
@@ -465,8 +551,26 @@ mod tests {
         assert_eq!(got.total_minor, 5_559_000);
         assert_eq!(lines.len(), 1);
 
-        let paid = record_payment(&store, &invoice.number, 5_559_000, "gateway", Some("TX99")).unwrap();
+        let paid =
+            record_payment(&store, &invoice.number, 5_559_000, "gateway", Some("TX99")).unwrap();
         assert_eq!(paid.status, InvoiceStatus::Paid);
-        assert_eq!(outstanding_minor_for_customer(&store, customer.id).unwrap(), 0);
+        assert_eq!(
+            outstanding_minor_for_customer(&store, customer.id).unwrap(),
+            0
+        );
+
+        // Invalid payments are rejected instead of corrupting the balance.
+        assert!(
+            record_payment(&store, &invoice.number, 0, "gateway", None).is_err(),
+            "zero payment"
+        );
+        assert!(
+            record_payment(&store, &invoice.number, -5, "gateway", None).is_err(),
+            "negative payment"
+        );
+        assert!(
+            record_payment(&store, &invoice.number, 1, "gateway", None).is_err(),
+            "paid invoice"
+        );
     }
 }

@@ -32,7 +32,9 @@ const fn iso6346_letter_value(c: u8) -> Option<u32> {
 pub fn iso6346_check_digit(code10: &str) -> CoreResult<u8> {
     let bytes = code10.as_bytes();
     if bytes.len() != 10 {
-        return Err(CoreError::Validation("container code must be 10 chars + check digit".into()));
+        return Err(CoreError::Validation(
+            "container code must be 10 chars + check digit".into(),
+        ));
     }
     let mut sum: u64 = 0;
     for (i, &c) in bytes.iter().enumerate() {
@@ -66,7 +68,11 @@ impl ContainerNumber {
             )));
         }
         for (i, &c) in bytes.iter().enumerate() {
-            let ok = if i < 4 { c.is_ascii_uppercase() } else { c.is_ascii_digit() };
+            let ok = if i < 4 {
+                c.is_ascii_uppercase()
+            } else {
+                c.is_ascii_digit()
+            };
             if !ok {
                 return Err(CoreError::Validation(format!(
                     "invalid character at position {}: {c:?}",
@@ -81,9 +87,9 @@ impl ContainerNumber {
             )));
         }
         let expected = iso6346_check_digit(&raw[..10])?;
-        let actual: u8 = raw[10..].parse().map_err(|_| {
-            CoreError::Validation("check digit is not a number".into())
-        })?;
+        let actual: u8 = raw[10..]
+            .parse()
+            .map_err(|_| CoreError::Validation("check digit is not a number".into()))?;
         if expected != actual {
             return Err(CoreError::Validation(format!(
                 "invalid ISO 6346 check digit: expected {expected}, got {actual} ({raw})"

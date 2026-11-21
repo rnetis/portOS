@@ -5,8 +5,11 @@ use axum::Extension;
 use axum::Json;
 use portos_core::container::ContainerNumber;
 use portos_core::ids::EquipmentId;
-use portos_core::work::{dispatch_next, transition_job, Equipment, EquipmentKind, EquipmentStatus, Job, JobKind, JobStatus, MoveRecord};
-use portos_core::{CoreError, CoreResult};
+use portos_core::work::{
+    dispatch_next, transition_job, Equipment, EquipmentKind, EquipmentStatus, Job, JobKind,
+    JobStatus, MoveRecord,
+};
+use portos_core::CoreError;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -30,7 +33,8 @@ pub async fn create_equipment(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<EquipmentBody>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("work.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("work.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let kind: EquipmentKind = serde_json::from_str(&format!("\"{}\"", body.kind))
         .map_err(|_| CoreError::Validation(format!("unknown equipment kind {}", body.kind)))
         .map_err(|e| problem(&state, &ctx, e))?;
@@ -44,10 +48,19 @@ pub async fn create_equipment(
         telemetry: None,
     };
     let e = eq.clone();
-    db(&state.store, move |store| portos_store::work::upsert_equipment(store, &e))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
-    crate::audit(&state, &auth, "work.equipment.create", "equipment", &eq.code).await;
+    db(&state.store, move |store| {
+        portos_store::work::upsert_equipment(store, &e)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
+    crate::audit(
+        &state,
+        &auth,
+        "work.equipment.create",
+        "equipment",
+        &eq.code,
+    )
+    .await;
     Ok(Json(serde_json::to_value(&eq).unwrap_or_default()))
 }
 
@@ -57,9 +70,11 @@ pub async fn list_equipment(
     Extension(_ctx): Extension<LocaleCtx>,
     Extension(_auth): Extension<AuthContext>,
 ) -> ApiResult<serde_json::Value> {
-    let equipment = db(&state.store, |store| portos_store::work::list_equipment(store))
-        .await
-        .map_err(|e| problem(&state, &_ctx, e))?;
+    let equipment = db(&state.store, |store| {
+        portos_store::work::list_equipment(store)
+    })
+    .await
+    .map_err(|e| problem(&state, &_ctx, e))?;
     Ok(Json(serde_json::json!({ "equipment": equipment })))
 }
 
@@ -76,7 +91,8 @@ pub async fn set_equipment_status(
     Path(id): Path<String>,
     Json(body): Json<EquipmentStatusBody>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("work.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("work.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let eid = id
         .parse::<uuid::Uuid>()
         .map(EquipmentId::from_uuid)
@@ -85,9 +101,11 @@ pub async fn set_equipment_status(
     let status: EquipmentStatus = serde_json::from_str(&format!("\"{}\"", body.status))
         .map_err(|_| CoreError::Validation(format!("unknown status {}", body.status)))
         .map_err(|e| problem(&state, &ctx, e))?;
-    db(&state.store, move |store| portos_store::work::update_equipment_status(store, eid, status))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    db(&state.store, move |store| {
+        portos_store::work::update_equipment_status(store, eid, status)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     crate::audit(&state, &auth, "work.equipment.status", "equipment", &id).await;
     Ok(Json(serde_json::json!({ "id": id, "status": status })))
 }
@@ -107,7 +125,8 @@ pub async fn create_job(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<CreateJob>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("work.dispatch").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("work.dispatch")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let kind: JobKind = serde_json::from_str(&format!("\"{}\"", body.kind))
         .map_err(|_| CoreError::Validation(format!("unknown job kind {}", body.kind)))
         .map_err(|e| problem(&state, &ctx, e))?;
@@ -117,7 +136,10 @@ pub async fn create_job(
     };
     let call = body
         .vessel_call_id
-        .map(|s| s.parse::<uuid::Uuid>().map(portos_core::ids::CallId::from_uuid))
+        .map(|s| {
+            s.parse::<uuid::Uuid>()
+                .map(portos_core::ids::CallId::from_uuid)
+        })
         .transpose()
         .map_err(|_| CoreError::Validation("bad vessel_call_id".into()))
         .map_err(|e| problem(&state, &ctx, e))?;
@@ -126,9 +148,11 @@ pub async fn create_job(
         Some(cn) => {
             let lookup = cn.clone();
             Some(
-                db(&state.store, move |store| portos_store::yard::get_container(store, &lookup))
-                    .await
-                    .map_err(|e| problem(&state, &ctx, e))?,
+                db(&state.store, move |store| {
+                    portos_store::yard::get_container(store, &lookup)
+                })
+                .await
+                .map_err(|e| problem(&state, &ctx, e))?,
             )
         }
         None => None,
@@ -152,9 +176,11 @@ pub async fn create_job(
         issue: None,
     };
     let j = job.clone();
-    db(&state.store, move |store| portos_store::work::create_job(store, &j))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    db(&state.store, move |store| {
+        portos_store::work::create_job(store, &j)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     crate::audit(&state, &auth, "work.job.create", "job", &job.id.to_string()).await;
     Ok(Json(serde_json::to_value(&job).unwrap_or_default()))
 }
@@ -174,7 +200,11 @@ pub async fn list_jobs(
                 .collect()
         })
         .unwrap_or_default();
-    let limit: u32 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100).min(1000);
+    let limit: u32 = q
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(1000);
     let jobs = db(&state.store, move |store| {
         portos_store::work::list_jobs(store, &statuses, limit)
     })
@@ -191,7 +221,8 @@ pub async fn dispatch_job(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("work.dispatch").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("work.dispatch")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let jid = id
         .parse::<uuid::Uuid>()
         .map(portos_core::ids::JobId::from_uuid)
@@ -205,26 +236,36 @@ pub async fn dispatch_job(
     .await
     .map_err(|e| problem(&state, &ctx, e))?;
     let Some((target_job, equipment_id)) = dispatch_next(&jobs, &equipment) else {
-        return Err(problem(&state, &ctx, CoreError::Conflict(
-            "no available compatible equipment for the queued job".into(),
-        )));
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Conflict("no available compatible equipment for the queued job".into()),
+        ));
     };
     if target_job != jid {
-        return Err(problem(&state, &ctx, CoreError::Conflict(format!(
-            "dispatcher selected job {target_job} first (priority order)"
-        ))));
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Conflict(format!(
+                "dispatcher selected job {target_job} first (priority order)"
+            )),
+        ));
     }
-    let mut job = jobs.iter().find(|j| j.id == jid).cloned().ok_or_else(|| {
-        CoreError::NotFound(format!("job {jid}"))
-    })?;
+    let mut job = jobs
+        .iter()
+        .find(|j| j.id == jid)
+        .cloned()
+        .ok_or_else(|| CoreError::NotFound(format!("job {jid}")))?;
     transition_job(job.status, JobStatus::InProgress).map_err(|e| problem(&state, &ctx, e))?;
     job.assigned_to = Some(equipment_id);
     job.assigned_at = Some(chrono::Utc::now());
     job.status = JobStatus::InProgress;
     let j = job.clone();
-    db(&state.store, move |store| portos_store::work::update_job(store, &j))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    db(&state.store, move |store| {
+        portos_store::work::update_job(store, &j)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     db(&state.store, move |store| {
         portos_store::work::update_equipment_status(store, equipment_id, EquipmentStatus::Busy)
     })
@@ -258,21 +299,35 @@ pub async fn complete_job(
     Path(id): Path<String>,
     Json(body): Json<CompleteJob>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("work.dispatch").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("work.dispatch")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let jid = id
         .parse::<uuid::Uuid>()
         .map(portos_core::ids::JobId::from_uuid)
         .map_err(|_| CoreError::Validation(format!("invalid job id {id:?}")))
         .map_err(|e| problem(&state, &ctx, e))?;
-    let mut job = db(&state.store, move |store| portos_store::work::get_job(store, jid))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
-    let next = if body.success { JobStatus::Done } else { JobStatus::Failed };
+    let mut job = db(&state.store, move |store| {
+        portos_store::work::get_job(store, jid)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
+    let next = if body.success {
+        JobStatus::Done
+    } else {
+        JobStatus::Failed
+    };
     transition_job(job.status, next).map_err(|e| problem(&state, &ctx, e))?;
-    let equipment = job.assigned_to.ok_or_else(|| CoreError::Conflict("job not dispatched".into())).map_err(|e| problem(&state, &ctx, e))?;
-    let container = job.container.clone().ok_or_else(|| {
-        CoreError::Conflict("job has no container; dispatch a containerized move".into())
-    }).map_err(|e| problem(&state, &ctx, e))?;
+    let equipment = job
+        .assigned_to
+        .ok_or_else(|| CoreError::Conflict("job not dispatched".into()))
+        .map_err(|e| problem(&state, &ctx, e))?;
+    let container = job
+        .container
+        .clone()
+        .ok_or_else(|| {
+            CoreError::Conflict("job has no container; dispatch a containerized move".into())
+        })
+        .map_err(|e| problem(&state, &ctx, e))?;
     job.status = next;
     job.completed_at = Some(chrono::Utc::now());
     job.issue = body.issue.clone();
@@ -303,5 +358,7 @@ pub async fn complete_job(
         },
     );
     crate::audit(&state, &auth, "work.job.complete", "job", &jid.to_string()).await;
-    Ok(Json(serde_json::json!({ "job": job, "success": body.success })))
+    Ok(Json(
+        serde_json::json!({ "job": job, "success": body.success }),
+    ))
 }

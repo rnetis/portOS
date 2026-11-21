@@ -6,7 +6,7 @@ use axum::Extension;
 use axum::Json;
 use portos_core::container::ContainerNumber;
 use portos_core::gate::{
-    GateDirection, GatePass, GateStepKind, GateTransaction, TruckAppointment, AppointmentStatus,
+    AppointmentStatus, GateDirection, GatePass, GateStepKind, GateTransaction, TruckAppointment,
 };
 use portos_core::ids::AppointmentId;
 use portos_core::{CoreError, CoreResult};
@@ -44,22 +44,29 @@ pub async fn book_appointment(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<BookAppointment>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("gate.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("gate.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let direction: GateDirection = serde_json::from_str(&format!("\"{}\"", body.direction))
         .map_err(|_| CoreError::Validation(format!("unknown direction {}", body.direction)))
         .map_err(|e| problem(&state, &ctx, e))?;
     let slot_from = parse_dt(&body.slot_from).map_err(|e| problem(&state, &ctx, e))?;
     let slot_to = parse_dt(&body.slot_to).map_err(|e| problem(&state, &ctx, e))?;
     if slot_to <= slot_from {
-        return Err(problem(&state, &ctx, CoreError::Validation("slot_to must be after slot_from".into())));
+        return Err(problem(
+            &state,
+            &ctx,
+            CoreError::Validation("slot_to must be after slot_from".into()),
+        ));
     }
     let container = match &body.container {
         Some(c) => Some(ContainerNumber::parse(c).map_err(|e| problem(&state, &ctx, e))?),
         None => None,
     };
-    let seq = db(&state.store, |store| portos_store::gate::count_appointments(store))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let seq = db(&state.store, |store| {
+        portos_store::gate::count_appointments(store)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     let reference = format!("TA-{}-{:06}", chrono::Utc::now().format("%Y"), seq + 1);
     let reference_for_appt = reference.clone();
     let appt = TruckAppointment {
@@ -77,9 +84,11 @@ pub async fn book_appointment(
         created_at: chrono::Utc::now(),
     };
     let a = appt.clone();
-    db(&state.store, move |store| portos_store::gate::create_appointment(store, &a))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    db(&state.store, move |store| {
+        portos_store::gate::create_appointment(store, &a)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     crate::events::publish(
         &state,
         portos_core::events::DomainEventKind::AppointmentBooked {
@@ -88,14 +97,26 @@ pub async fn book_appointment(
             slot_from,
         },
     );
-    crate::audit(&state, &auth, "gate.appointment.book", "truck_appointment", &reference).await;
-    let slot_display = portos_i18n::formats::datetime_display(ctx.locale, ctx.calendar, ctx.numerals, slot_from);
+    crate::audit(
+        &state,
+        &auth,
+        "gate.appointment.book",
+        "truck_appointment",
+        &reference,
+    )
+    .await;
+    let slot_display =
+        portos_i18n::formats::datetime_display(ctx.locale, ctx.calendar, ctx.numerals, slot_from);
     let msg = state.t(
         ctx.locale,
         "gate.appointment.booked",
-        &Args::new().arg("reference", &reference).arg("slot_from", &slot_display),
+        &Args::new()
+            .arg("reference", &reference)
+            .arg("slot_from", &slot_display),
     );
-    Ok(Json(serde_json::json!({ "appointment": appt, "message": msg })))
+    Ok(Json(
+        serde_json::json!({ "appointment": appt, "message": msg }),
+    ))
 }
 
 /// GET /v1/gate/appointments?from=&to= — slot overview (F-17/F-20).
@@ -129,7 +150,8 @@ pub async fn cancel_appointment(
     Extension(auth): Extension<AuthContext>,
     Path(reference): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("gate.manage").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("gate.manage")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let reference_lookup = reference.clone();
     let appt = db(&state.store, move |store| {
         portos_store::gate::get_appointment_by_reference(store, &reference_lookup)
@@ -141,9 +163,22 @@ pub async fn cancel_appointment(
     })
     .await
     .map_err(|e| problem(&state, &ctx, e))?;
-    crate::audit(&state, &auth, "gate.appointment.cancel", "truck_appointment", &reference).await;
-    let msg = state.t(ctx.locale, "gate.appointment.cancelled", &Args::new().arg("reference", &reference));
-    Ok(Json(serde_json::json!({ "reference": reference, "message": msg })))
+    crate::audit(
+        &state,
+        &auth,
+        "gate.appointment.cancel",
+        "truck_appointment",
+        &reference,
+    )
+    .await;
+    let msg = state.t(
+        ctx.locale,
+        "gate.appointment.cancelled",
+        &Args::new().arg("reference", &reference),
+    );
+    Ok(Json(
+        serde_json::json!({ "reference": reference, "message": msg }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -165,7 +200,8 @@ pub async fn start_transaction(
     headers: axum::http::HeaderMap,
     Json(body): Json<StartTx>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("gate.operate").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("gate.operate")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let direction: GateDirection = serde_json::from_str(&format!("\"{}\"", body.direction))
         .map_err(|_| CoreError::Validation(format!("unknown direction {}", body.direction)))
         .map_err(|e| problem(&state, &ctx, e))?;
@@ -184,10 +220,14 @@ pub async fn start_transaction(
             .await
             .map_err(|e| problem(&state, &ctx, e))?;
             if appt.status != AppointmentStatus::Booked {
-                return Err(problem(&state, &ctx, CoreError::Conflict(format!(
-                    "appointment {reference} is {:?}, not Booked",
-                    appt.status
-                ))));
+                return Err(problem(
+                    &state,
+                    &ctx,
+                    CoreError::Conflict(format!(
+                        "appointment {reference} is {:?}, not Booked",
+                        appt.status
+                    )),
+                ));
             }
             (Some(appt.id), appt.container.clone())
         }
@@ -209,17 +249,38 @@ pub async fn start_transaction(
     );
     let t = tx.clone();
     let key = idempotency_key.clone();
+    let appt_to_check_in = appointment_id;
     let stored = db(&state.store, move |store| {
         portos_store::gate::create_gate_tx(store, &t, key.as_deref())
     })
     .await
     .map_err(|e| problem(&state, &ctx, e))?;
+    // A truck that has started the gate workflow has checked in.
+    if let Some(appt_id) = appt_to_check_in {
+        let _ = db(&state.store, move |store| {
+            portos_store::gate::update_appointment_status(
+                store,
+                appt_id,
+                AppointmentStatus::CheckedIn,
+            )
+        })
+        .await;
+    }
     crate::metrics::METRICS.inc_by_one("portos_gate_tx_started_total");
-    crate::audit(&state, &auth, "gate.tx.start", "gate_transaction", &stored.id.to_string()).await;
+    crate::audit(
+        &state,
+        &auth,
+        "gate.tx.start",
+        "gate_transaction",
+        &stored.id.to_string(),
+    )
+    .await;
     let msg = state.t(
         ctx.locale,
         "gate.tx.started",
-        &Args::new().arg("plate", &body.plate).arg("lane", &body.gate_lane),
+        &Args::new()
+            .arg("plate", &body.plate)
+            .arg("lane", &body.gate_lane),
     );
     Ok(Json(serde_json::json!({
         "transaction": stored,
@@ -248,7 +309,8 @@ pub async fn apply_step(
     Path(id): Path<String>,
     Json(body): Json<StepRequest>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require("gate.operate").map_err(|e| problem(&state, &ctx, e))?;
+    auth.require("gate.operate")
+        .map_err(|e| problem(&state, &ctx, e))?;
     let tid = id
         .parse::<uuid::Uuid>()
         .map(portos_core::ids::GateTxId::from_uuid)
@@ -257,9 +319,11 @@ pub async fn apply_step(
     let kind: GateStepKind = serde_json::from_str(&format!("\"{}\"", body.kind))
         .map_err(|_| CoreError::Validation(format!("unknown step kind {}", body.kind)))
         .map_err(|e| problem(&state, &ctx, e))?;
-    let mut tx = db(&state.store, move |store| portos_store::gate::get_gate_tx(store, tid))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let mut tx = db(&state.store, move |store| {
+        portos_store::gate::get_gate_tx(store, tid)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
 
     if kind == GateStepKind::OcrScan {
         if let Some(text) = &body.ocr_container {
@@ -276,29 +340,41 @@ pub async fn apply_step(
     tx.apply(kind, body.ok, body.detail.clone(), chrono::Utc::now())
         .map_err(|e| problem(&state, &ctx, e))?;
     let t = tx.clone();
-    db(&state.store, move |store| portos_store::gate::update_gate_tx(store, &t))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    db(&state.store, move |store| {
+        portos_store::gate::update_gate_tx(store, &t)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
 
     // Completed gate-in/out → pass, EIR, state updates and events (F-19).
     let mut issued: Option<serde_json::Value> = None;
     if tx.status == portos_core::gate::GateStatus::Completed {
-        let seq = db(&state.store, |store| portos_store::gate::count_gate_tx(store))
-            .await
-            .map_err(|e| problem(&state, &ctx, e))?;
+        let seq = db(&state.store, |store| {
+            portos_store::gate::count_gate_tx(store)
+        })
+        .await
+        .map_err(|e| problem(&state, &ctx, e))?;
         let pass = GatePass::issue(&tx, seq as u64 + 1);
         let p = pass.clone();
-        db(&state.store, move |store| portos_store::gate::save_gate_pass(store, &p))
-            .await
-            .map_err(|e| problem(&state, &ctx, e))?;
+        db(&state.store, move |store| {
+            portos_store::gate::save_gate_pass(store, &p)
+        })
+        .await
+        .map_err(|e| problem(&state, &ctx, e))?;
 
         if let Some(container) = &tx.expected_container {
             let cn = container.clone();
-            let eir = portos_core::gate::EquipmentInterchangeReport::create(&tx, cn.clone(), seq as u64 + 1);
+            let eir = portos_core::gate::EquipmentInterchangeReport::create(
+                &tx,
+                cn.clone(),
+                seq as u64 + 1,
+            );
             let e = eir.clone();
-            db(&state.store, move |store| portos_store::gate::save_eir(store, &e))
-                .await
-                .map_err(|e| problem(&state, &ctx, e))?;
+            db(&state.store, move |store| {
+                portos_store::gate::save_eir(store, &e)
+            })
+            .await
+            .map_err(|e| problem(&state, &ctx, e))?;
             issued = Some(serde_json::json!({
                 "pass_no": pass.pass_no,
                 "eir_no": eir.eir_no,
@@ -349,12 +425,30 @@ pub async fn apply_step(
                 },
             );
         }
+        // Settle the appointment that admitted this truck (F-17/F-20).
+        if let Some(appt_id) = tx.appointment {
+            let _ = db(&state.store, move |store| {
+                portos_store::gate::update_appointment_status(
+                    store,
+                    appt_id,
+                    AppointmentStatus::Completed,
+                )
+            })
+            .await;
+        }
         crate::metrics::METRICS.inc_by_one("portos_gate_tx_completed_total");
         if let Some(elapsed) = tx.elapsed_seconds() {
             // Gate transactions under 5s target (§6.1).
             crate::metrics::METRICS.observe("portos_gate_tx_duration_seconds", elapsed);
         }
-        crate::audit(&state, &auth, "gate.tx.complete", "gate_transaction", &tx.id.to_string()).await;
+        crate::audit(
+            &state,
+            &auth,
+            "gate.tx.complete",
+            "gate_transaction",
+            &tx.id.to_string(),
+        )
+        .await;
     }
 
     Ok(Json(serde_json::json!({
@@ -376,9 +470,11 @@ pub async fn get_transaction(
         .map(portos_core::ids::GateTxId::from_uuid)
         .map_err(|_| CoreError::Validation(format!("invalid transaction id {id:?}")))
         .map_err(|e| problem(&state, &ctx, e))?;
-    let tx = db(&state.store, move |store| portos_store::gate::get_gate_tx(store, tid))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let tx = db(&state.store, move |store| {
+        portos_store::gate::get_gate_tx(store, tid)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     Ok(Json(serde_json::to_value(&tx).unwrap_or_default()))
 }
 
@@ -390,9 +486,16 @@ pub async fn list_transactions(
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<serde_json::Value> {
     let now = chrono::Utc::now();
-    let from = q.get("from").and_then(|s| parse_dt(s).ok()).unwrap_or(now - chrono::Duration::hours(24));
+    let from = q
+        .get("from")
+        .and_then(|s| parse_dt(s).ok())
+        .unwrap_or(now - chrono::Duration::hours(24));
     let to = q.get("to").and_then(|s| parse_dt(s).ok()).unwrap_or(now);
-    let limit: u32 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100).min(1000);
+    let limit: u32 = q
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(1000);
     let txs = db(&state.store, move |store| {
         portos_store::gate::list_recent_gate_tx(store, from, to, limit)
     })
@@ -448,9 +551,11 @@ pub async fn get_pass(
     Extension(_auth): Extension<AuthContext>,
     Path(pass_no): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let pass = db(&state.store, move |store| portos_store::gate::get_gate_pass(store, &pass_no))
-        .await
-        .map_err(|e| problem(&state, &ctx, e))?;
+    let pass = db(&state.store, move |store| {
+        portos_store::gate::get_gate_pass(store, &pass_no)
+    })
+    .await
+    .map_err(|e| problem(&state, &ctx, e))?;
     let title = state.t(ctx.locale, "gate.pass.title", &Args::new());
     Ok(Json(serde_json::json!({ "title": title, "pass": pass })))
 }

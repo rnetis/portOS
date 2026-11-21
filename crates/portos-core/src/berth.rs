@@ -3,7 +3,7 @@
 
 use crate::error::{CoreError, CoreResult};
 use crate::ids::{AllocationId, BerthId, CallId};
-use crate::vessel::{CargoMix, CallStatus, Vessel, VesselCall};
+use crate::vessel::{CallStatus, CargoMix, Vessel, VesselCall};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -127,7 +127,13 @@ pub struct ScoringWeights {
 
 impl Default for ScoringWeights {
     fn default() -> Self {
-        Self { fit: 0.30, cranes: 0.25, priority: 0.15, earliness: 0.20, shore_power: 0.10 }
+        Self {
+            fit: 0.30,
+            cranes: 0.25,
+            priority: 0.15,
+            earliness: 0.20,
+            shore_power: 0.10,
+        }
     }
 }
 
@@ -242,8 +248,7 @@ fn score_berth(
             (etd - start).max(Duration::hours(4))
         })
         .unwrap_or_else(|| Duration::hours(24));
-    let mut occ: Vec<(DateTime<Utc>, DateTime<Utc>)> =
-        occupied.iter().copied().collect();
+    let mut occ: Vec<(DateTime<Utc>, DateTime<Utc>)> = occupied.to_vec();
     occ.sort_by_key(|(f, _)| *f);
     let (from, to) = earliest_free_window(&occ, earliest, needed);
     let wait_hours = (from - earliest).num_minutes() as f64 / 60.0;
@@ -255,8 +260,11 @@ fn score_berth(
     let crane_score = clamp01(f64::from(berth.crane_count) / cranes_needed);
     let priority_score = clamp01((6 - i32::from(priority.clamp(1, 5))) as f64 / 5.0);
     let earliness_score = 1.0 / (1.0 + wait_hours / 12.0);
-    let reefer_benefit =
-        if call.cargo_mix.reefer_units > 0 && berth.shore_power { 1.0 } else { 0.0 };
+    let reefer_benefit = if call.cargo_mix.reefer_units > 0 && berth.shore_power {
+        1.0
+    } else {
+        0.0
+    };
 
     let total = weights.fit * fit_score
         + weights.cranes * crane_score
@@ -343,7 +351,9 @@ pub fn transition_call(call_status: CallStatus, next: CallStatus) -> CoreResult<
     use CallStatus::*;
     let allowed: &[(CallStatus, &[CallStatus])] = &[
         (Scheduled, &[AnchorageArrived, Cancelled, Berthed]),
-        (AnchorageArrived, &[Berthed, Departed, Cancelled]),
+        // A vessel that has anchored but not berthed can only berth or be
+        // cancelled; departure requires an alongside phase first.
+        (AnchorageArrived, &[Berthed, Cancelled]),
         (Berthed, &[Working, Departed, Completed]),
         (Working, &[Completed, Departed]),
         (Completed, &[Departed]),
@@ -420,7 +430,11 @@ mod tests {
             eta_utc: eta,
             etd_utc: Some(eta + Duration::hours(20)),
             status: CallStatus::Scheduled,
-            cargo_mix: CargoMix { discharge_teu: 1800, load_teu: 400, ..Default::default() },
+            cargo_mix: CargoMix {
+                discharge_teu: 1800,
+                load_teu: 400,
+                ..Default::default()
+            },
             anchorage_arrived_at: None,
             berthed_at: None,
             work_completed_at: None,
@@ -439,7 +453,15 @@ mod tests {
         let b1 = berth("B1", 320.0, 15.0, 4, true);
         let b2 = berth("B2", 240.0, 15.0, 2, false); // too short
         let b3 = berth("B3", 360.0, 13.0, 4, false); // too shallow
-        let out = suggest_berths(&v, &c, 3, &[b1, b2, b3], &[], t0, &ScoringWeights::default());
+        let out = suggest_berths(
+            &v,
+            &c,
+            3,
+            &[b1, b2, b3],
+            &[],
+            t0,
+            &ScoringWeights::default(),
+        );
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].berth_code, "B1");
         assert!(out[0].score.unwrap() > 0.0);
@@ -464,8 +486,14 @@ mod tests {
         let s = &out[0];
         assert!(s.score.is_some());
         let from = s.planned_from.unwrap();
-        assert!(from >= t0 + Duration::hours(6), "must start after occupancy ends");
-        assert!(s.reasons.iter().any(|r| r.contains("wait 6.0h") || r.contains("wait 6")));
+        assert!(
+            from >= t0 + Duration::hours(6),
+            "must start after occupancy ends"
+        );
+        assert!(s
+            .reasons
+            .iter()
+            .any(|r| r.contains("wait 6.0h") || r.contains("wait 6")));
     }
 
     #[test]
@@ -474,5 +502,8 @@ mod tests {
         assert!(transition_call(CallStatus::AnchorageArrived, CallStatus::Berthed).is_ok());
         assert!(transition_call(CallStatus::Scheduled, CallStatus::Working).is_err());
         assert!(transition_call(CallStatus::Departed, CallStatus::Berthed).is_err());
+        // Leaving the anchorage without berthing is a cancellation, not a departure.
+        assert!(transition_call(CallStatus::AnchorageArrived, CallStatus::Departed).is_err());
+        assert!(transition_call(CallStatus::AnchorageArrived, CallStatus::Cancelled).is_ok());
     }
 }

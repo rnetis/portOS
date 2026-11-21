@@ -10,7 +10,7 @@ management, gate automation, billing, KPIs and EDI integration.
 | Crates | `portos-core` · `portos-i18n` · `portos-edi` · `portos-store` · `portos-api` |
 | HTTP | axum 0.8, JWT (HS256) + Argon2id, RBAC |
 | Storage | SQLite (WAL) with ordered migrations |
-| Tests | 103 unit tests + end-to-end integration test |
+| Tests | 100 unit tests + end-to-end integration test (API flow, `cargo test --workspace`) |
 
 ## Quick start
 
@@ -56,13 +56,13 @@ curl -N "localhost:8080/v1/events/stream?token=$TOKEN"      # live SSE event fee
 | Storage/reefer charge calculation, invoices, payments | F-28, F-29 | ✅ |
 | KPI computations (moves/h, dwell, truck turnaround, anchorage wait) | F-31, F-32, §1.4 | ✅ |
 | EDIFACT COPARN/CODECO/COARRI/BAPLIE parse + BAPLIE emit | I-2 | ✅ |
-| SSE events, signed webhooks, outbox | F-26, I-1 | ✅ |
+| SSE events, signed webhooks, durable outbox with backoff + dead-letter | F-26, I-1 | ✅ |
 | JWT + RBAC (8 roles), audit trail | F-44, F-40 | ✅ |
 | Bilingual catalogs, Jalali calendar, Persian numerals, bidi, RTL flag | L-1..L-10 | ✅ |
 | Multi-currency incl. IRR + FX + Toman display | L-9 | ✅ |
-| Idle/batch pieces of Phase 2/3 (digital twin F-33, predictive maintenance F-16, customs integration F-24, CCTV F-37) | — | ⏳ roadmap (interfaces prepared) |
+| Phase 2/3 scope (community portal, automation agents, digital twin F-33, predictive maintenance F-16, customs integration F-24, CCTV F-37) | — | ⏳ roadmap (extension points prepared, not implemented) |
 
-The full mapping with endpoint references is in `docs/ARCHITECTURE.md`.
+The live endpoint list and schemas are served by the running API at `/api-docs/openapi.json`.
 
 ## Architecture
 
@@ -93,19 +93,36 @@ dev default), `PORTOS_TENANT`, `PORTOS_CORS_ORIGINS`, `PORTOS_LOG_FORMAT`,
 
 ## Deployment
 
-`Dockerfile` (multi-stage) and `docker-compose.yml` are included; docs:
-`docs/ARCHITECTURE.md`, `docs/LOCALIZATION.md`, `docs/SECURITY.md`,
-`docs/DEPLOYMENT.md`.
+A multi-stage `Dockerfile` (non-root user, writable `/data` volume, `readyz`
+healthcheck) and `docker-compose.yml` are included. The container refuses to
+start without `PORTOS_JWT_SECRET` (>= 32 chars) because it sets
+`PORTOS_REQUIRE_SECRET=1`. Put the API behind TLS (reverse proxy) and enable
+`PORTOS_TRUST_PROXY=1` only when the proxy is the sole ingress, otherwise
+`X-Forwarded-For` is ignored for client-IP based rate limiting.
+
+Operational notes:
+
+- Every request receives an `X-Request-Id`; internal errors log the full cause
+  under a short correlation id that is returned to the client instead of stack
+  details.
+- `/readyz` checks the database, `/healthz` only the process — use `readyz` for
+  orchestrator probes.
+- Migrations are applied automatically on startup (`schema_migrations` order).
+- Webhooks are delivered from a durable outbox in the database with exponential
+  backoff (8 attempts) and a terminal dead-letter state; restarting the process
+  does not lose queued deliveries.
+- `PORTOS_CORS_ORIGINS` should list explicit origins in production; `*` is
+  intended for local development only.
 
 ## Known limitations (v1.0.0)
 
 - SQLite is the storage engine (single writer); PostgreSQL is the planned
   scaling path — the repository layer is isolated behind `portos-store`.
-- The end-to-end integration test has one failing assertion (vessel-call
-  creation returns 422 under the test fixture) — all 103 unit tests and the
-  remaining ~40 integration assertions pass; see `tests/api_integration.rs`.
-- Webhook delivery retries use a simple attempt counter (no exponential
-  backoff queue yet).
+- SQLite uses a single writer; write throughput is bounded by one connection
+  at a time. The repository layer is isolated in `portos-store` so PostgreSQL
+  can be added without touching domain or route code.
+- SSE event streams and the outbox dispatcher are single-process; running
+  multiple API replicas against one SQLite file is not supported.
 
 ## License
 

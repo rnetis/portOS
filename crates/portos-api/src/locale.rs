@@ -4,10 +4,10 @@
 //! Display-only preferences ride along: calendar (`X-Calendar` /
 //! `?calendar=`) and numerals (`X-Numerals` / `?numerals=`).
 
+use axum::extract::Request;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::middleware::Next;
-use axum::extract::Request;
 use portos_i18n::{defaults_for, Calendar, Locale, Numerals};
 
 use crate::state::AppState;
@@ -22,7 +22,11 @@ pub struct LocaleCtx {
 
 impl Default for LocaleCtx {
     fn default() -> Self {
-        Self { locale: Locale::En, calendar: Calendar::Gregorian, numerals: Numerals::Western }
+        Self {
+            locale: Locale::En,
+            calendar: Calendar::Gregorian,
+            numerals: Numerals::Western,
+        }
     }
 }
 
@@ -32,7 +36,11 @@ impl LocaleCtx {
     #[must_use]
     pub fn with_locale_defaults(locale: Locale) -> Self {
         let (calendar, numerals) = defaults_for(locale);
-        Self { locale, calendar, numerals }
+        Self {
+            locale,
+            calendar,
+            numerals,
+        }
     }
 }
 
@@ -55,7 +63,8 @@ pub fn resolve(
     user_calendar: Option<Calendar>,
     user_numerals: Option<Numerals>,
 ) -> LocaleCtx {
-    let mut ctx = LocaleCtx::with_locale_defaults(user_locale.unwrap_or(state.config.default_locale));
+    let mut ctx =
+        LocaleCtx::with_locale_defaults(user_locale.unwrap_or(state.config.default_locale));
 
     // Language: explicit query param beats header beats user default.
     if let Some(lang) = qp(query, "lang").and_then(|v| Locale::parse(&v)) {
@@ -95,7 +104,10 @@ pub async fn locale_middleware(
     next: Next,
 ) -> axum::response::Response {
     // A saved user preference (authenticated) wins over the server default.
-    let prefs = req.extensions().get::<crate::auth::AuthContext>().map(|a| (a.username.clone(), a.user_id.clone()));
+    let prefs = req
+        .extensions()
+        .get::<crate::auth::AuthContext>()
+        .map(|a| (a.username.clone(), a.user_id.clone()));
     let (user_locale, user_calendar, user_numerals) = if let Some((username, _uid)) = prefs {
         match crate::db::db(&state.store, move |store| {
             Ok(portos_store::users::find_by_username(store, &username)?
@@ -111,7 +123,14 @@ pub async fn locale_middleware(
         (None, None, None)
     };
 
-    let ctx = resolve(&state, &headers, &raw, user_locale, user_calendar, user_numerals);
+    let ctx = resolve(
+        &state,
+        &headers,
+        &raw,
+        user_locale,
+        user_calendar,
+        user_numerals,
+    );
     req.extensions_mut().insert(ctx);
     next.run(req).await
 }

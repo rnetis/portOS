@@ -63,8 +63,18 @@ pub fn date_long(locale: Locale, calendar: Calendar, d: NaiveDate, numerals: Num
         }
         (Locale::Fa, Calendar::Gregorian) => {
             const FA_MONTHS: [&str; 12] = [
-                "ژانویه", "فوریه", "مارس", "آوریل", "مه", "ژوئن",
-                "ژوئیه", "اوت", "سپتامبر", "اکتبر", "نوامبر", "دسامبر",
+                "ژانویه",
+                "فوریه",
+                "مارس",
+                "آوریل",
+                "مه",
+                "ژوئن",
+                "ژوئیه",
+                "اوت",
+                "سپتامبر",
+                "اکتبر",
+                "نوامبر",
+                "دسامبر",
             ];
             format!(
                 "{} {} {}",
@@ -102,12 +112,23 @@ pub fn money_display(locale: Locale, numerals: Numerals, money: Money) -> String
     let scale = 10i64.pow(dec as u32);
     let sign = if money.minor < 0 { "-" } else { "" };
     let abs = money.minor.unsigned_abs();
-    let int_part = group_thousands(&(abs / scale as u64).to_string(), if numerals == Numerals::Persian { FA_THOUSANDS } else { ',' });
+    let int_part = group_thousands(
+        &(abs / scale as u64).to_string(),
+        if numerals == Numerals::Persian {
+            FA_THOUSANDS
+        } else {
+            ','
+        },
+    );
     let body = match dec {
         0 => int_part,
         _ => {
             let frac = format!("{:0width$}", abs % scale as u64, width = dec);
-            let decimal_sep = if numerals == Numerals::Persian { FA_DECIMAL } else { '.' };
+            let decimal_sep = if numerals == Numerals::Persian {
+                FA_DECIMAL
+            } else {
+                '.'
+            };
             format!("{int_part}{decimal_sep}{frac}")
         }
     };
@@ -133,15 +154,28 @@ pub fn toman_display(locale: Locale, numerals: Numerals, rial: Money) -> Option<
     let tomans = rial.minor / 10;
     let m = Money::new(tomans, Currency::IRR);
     let s = money_display(locale, numerals, m);
-    Some(if locale == Locale::Fa { s.replace("ریال", "تومان") } else { s.replace("IRR", "Toman") })
+    Some(if locale == Locale::Fa {
+        s.replace("ریال", "تومان")
+    } else {
+        s.replace("IRR", "Toman")
+    })
 }
 
 /// Quantity with fixed decimals and locale separators.
 #[must_use]
 pub fn number_display(numerals: Numerals, value: f64, decimals: u32) -> String {
     let formatted = format!("{value:.0$}", decimals as usize);
-    let (int_part, frac_part) = formatted.split_once('.').unwrap_or((formatted.as_str(), ""));
-    let int_part = group_thousands(int_part, if numerals == Numerals::Persian { FA_THOUSANDS } else { ',' });
+    let (int_part, frac_part) = formatted
+        .split_once('.')
+        .unwrap_or((formatted.as_str(), ""));
+    let int_part = group_thousands(
+        int_part,
+        if numerals == Numerals::Persian {
+            FA_THOUSANDS
+        } else {
+            ','
+        },
+    );
     let body = if frac_part.is_empty() {
         int_part
     } else if numerals == Numerals::Persian {
@@ -179,11 +213,23 @@ mod tests {
     #[test]
     fn money_irr_and_usd() {
         let irr = Money::new(850_000, Currency::IRR);
-        assert_eq!(money_display(Locale::En, Numerals::Western, irr), "850,000 IRR");
-        assert_eq!(money_display(Locale::Fa, Numerals::Persian, irr), "۸۵۰٬۰۰۰ ریال");
+        assert_eq!(
+            money_display(Locale::En, Numerals::Western, irr),
+            "850,000 IRR"
+        );
+        assert_eq!(
+            money_display(Locale::Fa, Numerals::Persian, irr),
+            "۸۵۰٬۰۰۰ ریال"
+        );
         let usd = Money::new(125_050, Currency::USD);
-        assert_eq!(money_display(Locale::En, Numerals::Western, usd), "1,250.50 USD");
-        assert_eq!(money_display(Locale::Fa, Numerals::Persian, usd), "۱٬۲۵۰٫۵۰ دلار آمریکا");
+        assert_eq!(
+            money_display(Locale::En, Numerals::Western, usd),
+            "1,250.50 USD"
+        );
+        assert_eq!(
+            money_display(Locale::Fa, Numerals::Persian, usd),
+            "۱٬۲۵۰٫۵۰ دلار آمریکا"
+        );
     }
 
     #[test]
